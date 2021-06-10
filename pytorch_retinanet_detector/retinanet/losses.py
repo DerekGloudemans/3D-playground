@@ -85,10 +85,10 @@ class FocalLoss(nn.Module):
             ymin,_ = torch.min(bbox_annotation[:,[1,3,5,7]],dim = 1)
             ymax,_ = torch.max(bbox_annotation[:,[1,3,5,7]],dim = 1)
             
-            xmin2,_ = torch.min(bbox_annotation[:,[0,2,4,6]]- bbox_annotation[:,8].unsqueeze(1).repeat(1,4),dim = 1)
-            xmax2,_ = torch.max(bbox_annotation[:,[0,2,4,6]]- bbox_annotation[:,8].unsqueeze(1).repeat(1,4),dim = 1)
-            ymin2,_ = torch.min(bbox_annotation[:,[1,3,5,7]]- bbox_annotation[:,9].unsqueeze(1).repeat(1,4),dim = 1)
-            ymax2,_ = torch.max(bbox_annotation[:,[1,3,5,7]]- bbox_annotation[:,9].unsqueeze(1).repeat(1,4),dim = 1)
+            xmin2,_ = torch.min(bbox_annotation[:,[8,10,12,14]],dim = 1)
+            xmax2,_ = torch.max(bbox_annotation[:,[8,10,12,14]],dim = 1)
+            ymin2,_ = torch.min(bbox_annotation[:,[9,11,13,15]],dim = 1)
+            ymax2,_ = torch.max(bbox_annotation[:,[9,11,13,15]],dim = 1)
             
             xmin = torch.min(xmin,xmin2).unsqueeze(1)
             xmax = torch.max(xmax,xmax2).unsqueeze(1)
@@ -173,13 +173,32 @@ class FocalLoss(nn.Module):
                 # targets = targets.t()
                 targets = assigned_annotations[:,:-1] # remove classifications from targets
                 
-                targets[:,[0,2,4,6]] = (targets[:,[0,2,4,6]] - anchor_ctr_x_pi.unsqueeze(1).repeat(1,4)) / anchor_widths_pi.unsqueeze(1).repeat(1,4)
-                targets[:,[1,3,5,7]] = (targets[:,[1,3,5,7]] - anchor_ctr_y_pi.unsqueeze(1).repeat(1,4)) / anchor_heights_pi.unsqueeze(1).repeat(1,4)
-                targets[:,8] = targets[:,8] / anchor_heights_pi
-                targets[:,9] = targets[:,9] / anchor_heights_pi
-
-                ###
-
+                # regression is x,y,wx,wy,lx,ly,hx,hy - need to convert to corner coordinates
+                # fbl fbr bbl bbr ftl ftr btl btr - alternate w first, then l, then h
+            
+                regression = regression[positive_indices,:]
+                
+                preds = torch.zeros([regression.shape[0],16],requires_grad = True).cuda()
+                preds[:,0] = regression[:,0] - regression[:,2] - regression[:,4] - regression[:,6]
+                preds[:,1] = regression[:,1] - regression[:,3] - regression[:,5] - regression[:,7]
+                preds[:,2] = regression[:,0] + regression[:,2] - regression[:,4] - regression[:,6]
+                preds[:,3] = regression[:,1] + regression[:,3] - regression[:,5] - regression[:,7]
+                preds[:,4] = regression[:,0] - regression[:,2] + regression[:,4] - regression[:,6]
+                preds[:,5] = regression[:,1] - regression[:,3] + regression[:,5] - regression[:,7]
+                preds[:,6] = regression[:,0] + regression[:,2] + regression[:,4] - regression[:,6]
+                preds[:,7] = regression[:,1] + regression[:,3] + regression[:,5] - regression[:,7]
+                
+                preds[:,8]  = regression[:,0] - regression[:,2] - regression[:,4] + regression[:,6]
+                preds[:,9]  = regression[:,1] - regression[:,3] - regression[:,5] + regression[:,7]
+                preds[:,10] = regression[:,0] + regression[:,2] - regression[:,4] + regression[:,6]
+                preds[:,11] = regression[:,1] + regression[:,3] - regression[:,5] + regression[:,7]
+                preds[:,12] = regression[:,0] - regression[:,2] + regression[:,4] + regression[:,6]
+                preds[:,13] = regression[:,1] - regression[:,3] + regression[:,5] + regression[:,7]
+                preds[:,14] = regression[:,0] + regression[:,2] + regression[:,4] + regression[:,6]
+                preds[:,15] = regression[:,1] + regression[:,3] + regression[:,5] + regression[:,7]
+                
+                targets[:,[0,2,4,6,8,10,12,14]] = (targets[:,[0,2,4,6,8,10,12,14]] - anchor_ctr_x_pi.unsqueeze(1).repeat(1,8)) / anchor_widths_pi.unsqueeze(1).repeat(1,8)
+                targets[:,[1,3,5,7,9,11,13,15]] = (targets[:,[1,3,5,7,9,11,13,15]] - anchor_ctr_y_pi.unsqueeze(1).repeat(1,8)) / anchor_heights_pi.unsqueeze(1).repeat(1,8)
                 
 
                 # std_dev
@@ -188,7 +207,8 @@ class FocalLoss(nn.Module):
 
                 negative_indices = 1 + (~positive_indices)
 
-                regression_diff = torch.abs(targets - regression[positive_indices, :])
+                #regression_diff = torch.abs(targets - regression[positive_indices, :])
+                regression_diff = torch.abs(targets - preds)
 
                 regression_loss = torch.where(
                     torch.le(regression_diff, 1.0 / 9.0),

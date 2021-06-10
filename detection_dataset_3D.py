@@ -15,7 +15,6 @@ import _pickle as pickle
 
 import torch
 import torchvision.transforms.functional as F
-    
 import cv2
 from PIL import Image
 import torch
@@ -66,8 +65,6 @@ def cache_frames(label_directory,video_directory,output_dir,skip_frames = 29):
         
         while ret and frame_num < 2000:
             
-            
-            
             # cache frame and append data to all_data if necessary
             if frame_num % (skip_frames + 1) == 0 or REPLACE:
                 
@@ -82,7 +79,7 @@ def cache_frames(label_directory,video_directory,output_dir,skip_frames = 29):
                                 break
                         except ValueError:
                             REPLACE = True
-                        
+                            
                 except KeyError: # there are no boxes for this frame
                     frame_labels[frame_num] = []
                 
@@ -197,6 +194,7 @@ class Detection_Dataset(data.Dataset):
         
         self.labels = []
         self.data = []
+        self.box_2d = []
         
         # load label file and parse
         label_file = os.path.join(dataset_dir,"labels.cpkl")
@@ -210,6 +208,7 @@ class Detection_Dataset(data.Dataset):
             EXCLUDE = False
             frame_boxes = []
             
+            boxes_2d = []
             if len(item[1]) == 0:
                 frame_boxes = [torch.zeros(17)]
             else:
@@ -219,21 +218,23 @@ class Detection_Dataset(data.Dataset):
                     bbox3d = np.array(box[13:29]).astype(float) /2.0
                     
                     if len(bbox3d) != 16:
-                        EXCLUDE = True
-                        break
+                        #EXCLUDE = True
+                        boxes_2d.append(bbox2d)
+                        #break
                     
                     bbox = np.concatenate((bbox3d,cls),axis = 0).astype(float)
                     bbox = torch.from_numpy(bbox)
                     frame_boxes.append(bbox)
                 
             
-            if not EXCLUDE:
+            if True:  #not EXCLUDE:
                 try:
                     frame_boxes = torch.stack(frame_boxes)
                 except:
                     pass
                 self.data.append(item[0])
                 self.labels.append(frame_boxes)
+                self.box_2d.append(boxes_2d)
             
             # reformat label so each frame is a tensor of size [n objs, label_format_length + 1] where +1 is class index
 
@@ -243,9 +244,11 @@ class Detection_Dataset(data.Dataset):
         if self.mode == "train":
             self.data = self.data[:int(len(self.data)*0.9)]
             self.labels = self.labels[:int(len(self.labels)*0.9)]
+            self.box_2d = self.box_2d[:int(len(self.labels)*0.9)]
         else:
             self.data = self.data[int(len(self.data)*0.9):]
             self.labels = self.labels[int(len(self.labels)*0.9):]
+            self.box_2d = self.box_2d[int(len(self.labels)*0.9):]
     
     def __getitem__(self,index):
         """ returns item indexed from all frames in all tracks from training
@@ -254,18 +257,41 @@ class Detection_Dataset(data.Dataset):
         no_labels = False
         
         # load image and get label        
-        y = self.labels[index]
+        y = self.labels[index].clone()
         im = Image.open(self.data[index])
-        
+        #mask_regions = self.box_2d[index]
         
         if y.numel() == 0:
             y = torch.zeros([1,17])
             no_labels = True
             
         
+        # im = F.to_tensor(im)
         
+        # for region in mask_regions:
+        #     im[:,region[1]:region[3],region[0]:region[2]] = 0
+            
+        # im = F.to_pil_image(im)
         
-        # randomly flip
+            
+        # stretch and scale randomly by a small amount (0.8 - 1.2 x in either dimension)
+        scale = max(1,np.random.normal(1,0.1))
+        aspect_ratio = np.random.normal(1,0.2)
+        size = im.size
+        new_size = (int(im.size[1] * scale * aspect_ratio),int(im.size[0] * scale))
+        im = F.resize(im,new_size)
+        im = F.to_tensor(im)
+        
+        new_im = torch.rand([3,size[1],size[0]])
+        new_im[:,:min(im.shape[1],new_im.shape[1]),:min(im.shape[2],new_im.shape[2])] = im[:,:min(im.shape[1],new_im.shape[1]),:min(im.shape[2],new_im.shape[2])]
+        
+        im = new_im
+        im = F.to_pil_image(im)
+        
+        y[:,[0,2,4,6,8,10,12,14]] = y[:,[0,2,4,6,8,10,12,14]] * scale 
+        y[:,[1,3,5,7,9,11,13,15]] = y[:,[1,3,5,7,9,11,13,15]] * scale * aspect_ratio
+        
+        #randomly flip
         FLIP = np.random.rand()
         if FLIP > 0.5:
             im= F.hflip(im)
@@ -277,28 +303,117 @@ class Detection_Dataset(data.Dataset):
             if no_labels:
                 y = torch.zeros([1,17])
 
-        if self.label_format == "tailed_footprint":
-            # average top 4 points and average bottom 4 points to get height vector
-            bot_y = (y[:,1] + y[:,3] + y[:,5] + y[:,7])/4.0
-            bot_x = (y[:,0] + y[:,2] + y[:,4] + y[:,6])/4.0
-            top_x = (y[:,8] + y[:,10] + y[:,12] + y[:,14])/4.0
-            top_y = (y[:,9] + y[:,11] + y[:,13] + y[:,15])/4.0  
-            y_tail = top_y - bot_y
-            x_tail = top_x - bot_x
+        # remove all labels that fall fully outside of image now
+        keep = []
+        for item in y:
+            if min(item[[0,2,4,6,8,10,12,14]]) < im.size[0] and max(item[[0,2,4,6,8,10,12,14]]) >= 0 and min(item[[1,3,5,7,9,11,13,15]]) < im.size[1] and max(item[[1,3,5,7,9,11,13,15]]) >= 0:
+                keep.append(item)
+       
+        try:
+            y = torch.stack(keep)
+        except:
+            y = torch.zeros([1,17])
             
-            new_y = torch.zeros([len(y),11])
-            new_y[:,:8] = y[:,:8]
-            new_y[:,8] = x_tail
-            new_y[:,9] = y_tail
-            new_y[:,10] = y[:,-1]
-            y = new_y
+        # if self.label_format == "tailed_footprint":
+        #     # average top 4 points and average bottom 4 points to get height vector
+        #     bot_y = (y[:,1] + y[:,3] + y[:,5] + y[:,7])/4.0
+        #     bot_x = (y[:,0] + y[:,2] + y[:,4] + y[:,6])/4.0
+        #     top_x = (y[:,8] + y[:,10] + y[:,12] + y[:,14])/4.0
+        #     top_y = (y[:,9] + y[:,11] + y[:,13] + y[:,15])/4.0  
+        #     y_tail = top_y - bot_y
+        #     x_tail = top_x - bot_x
             
+        #     new_y = torch.zeros([len(y),11])
+        #     new_y[:,:8] = y[:,:8]
+        #     new_y[:,8] = x_tail
+        #     new_y[:,9] = y_tail
+        #     new_y[:,10] = y[:,-1]
+        #     y = new_y
+            
+        
+            
+        
         # convert image and label to tensors
         im_t = self.im_tf(im)
         
+        TILE = np.random.rand()
+        TILE = 0.6
+        if TILE > 0.25:
+            # find min and max x coordinate for each bbox
+            occupied_x = []
+            occupied_y = []
+            for box in y:
+                xmin = min(box[[0,2,4,6,8,10,12,14]])
+                xmax = max(box[[0,2,4,6,8,10,12,14]])
+                ymin = min(box[[1,3,5,7,9,11,13,15]])
+                ymax = max(box[[1,3,5,7,9,11,13,15]])
+                occupied_x.append([xmin,xmax])
+                occupied_y.append([ymin,ymax])
+            
+            good = False
+            while not good:
+                good = True
+                xsplit = np.random.randint(0,im.size[0])
+                for rang in occupied_x:
+                    if xsplit > rang[0] and xsplit < rang[1]:
+                        good = False
+                        break
+                if good:
+                    break
+            
+            good = False
+            while not good:
+                good = True
+                ysplit = np.random.randint(0,im.size[1])
+                for rang in occupied_y:
+                    if ysplit > rang[0] and ysplit < rang[1]:
+                        good = False
+                        break
+                if good:
+                    break
+            
+            print(xsplit,ysplit)
+            
+            im11 = im_t[:,:ysplit,:xsplit]
+            im12 = im_t[:,ysplit:,:xsplit]
+            im21 = im_t[:,:ysplit,xsplit:]
+            im22 = im_t[:,ysplit:,xsplit:]
+        
+            if TILE > 0.25 and TILE < 0.5:
+                im_t = torch.cat((torch.cat((im21,im22),dim = 1),torch.cat((im11,im12),dim = 1)),dim = 2)
+            elif TILE > 0.5 and TILE < 0.75: 
+                im_t = torch.cat((torch.cat((im22,im21),dim = 1),torch.cat((im12,im11),dim = 1)),dim = 2)
+            elif TILE > 0.75:
+                im_t = torch.cat((torch.cat((im12,im11),dim = 1),torch.cat((im22,im21),dim = 1)),dim = 2)
+            
+            if TILE > 0.25 and TILE < 0.75:
+                for idx in range(0,len(y)):
+                    if occupied_x[idx][0] > xsplit:
+                        y[idx,[0,2,4,6,8,10,12,14]] = y[idx,[0,2,4,6,8,10,12,14]] - xsplit
+                    else:
+                        y[idx,[0,2,4,6,8,10,12,14]] = y[idx,[0,2,4,6,8,10,12,14]] + (im_t.shape[2] - xsplit)
+                        
+            if TILE > 0.5:
+                 for idx in range(0,len(y)):
+                    if occupied_y[idx][0] > ysplit:
+                        y[idx,[1,3,5,7,9,11,13,15]] = y[idx,[1,3,5,7,9,11,13,15]] - ysplit
+                    else:
+                        y[idx,[1,3,5,7,9,11,13,15]] = y[idx,[1,3,5,7,9,11,13,15]] + (im_t.shape[1] - ysplit)
+                
+            # if TILE > 0.5 and TILE < 0.75:
+            #     im_t = torch.cat((torch.cat((im22,im21),dim = 1),torch.cat((im12,im11),dim = 1)),dim = 2)
+            #     if occupied_y[idx][0] > ysplit:
+            #             y[idx,[1,3,5,7,9,11,13,15]] = y[idx,[1,3,5,7,9,11,13,15]] - ysplit
+                        
+            #     if occupied_y[idx][0] > xsplit:
+            #         x[idx,[0,2,4,6,8,10,12,14]] = x[idx,[0,2,4,6,8,10,12,14]] - xsplit
+                
+            # if TILE > 0.75:    
+            #     im_t = torch.cat((torch.cat((im12,im11),dim = 1),torch.cat((im22,im21),dim = 1)),dim = 2)
+                
         
         return im_t, y
-    
+        
     
     def __len__(self):
         return len(self.labels)
@@ -328,45 +443,76 @@ class Detection_Dataset(data.Dataset):
 
         cv_im = cv_im.copy()
 
+        # class_colors = [
+        #     (255,150,0),
+        #     (255,100,0),
+        #     (255,50,0),
+        #     (0,255,150),
+        #     (0,255,100),
+        #     (0,255,50),
+        #     (0,100,255),
+        #     (0,50,255),
+        #     (255,150,0),
+        #     (255,100,0),
+        #     (255,50,0),
+        #     (0,255,150),
+        #     (0,255,100),
+        #     (0,255,50),
+        #     (0,100,255),
+        #     (0,50,255),
+        #     (200,200,200) #ignored regions
+        #     ]
+    
         class_colors = [
-            (255,150,0),
+            (0,255,0),
+            (255,0,0),
+            (0,0,255),
+            (255,255,0),
+            (255,0,255),
+            (0,255,255),
             (255,100,0),
             (255,50,0),
             (0,255,150),
             (0,255,100),
-            (0,255,50),
-            (0,100,255),
-            (0,50,255),
-            (255,150,0),
-            (255,100,0),
-            (255,50,0),
-            (0,255,150),
-            (0,255,100),
-            (0,255,50),
-            (0,100,255),
-            (0,50,255),
-            (200,200,200) #ignored regions
-            ]
+            (0,255,50)]
         
-        
-        for bbox in label:
-            thickness = 2
-            bbox = bbox.int().data.numpy()
-            cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[2],bbox[3]), class_colors[bbox[-1]], thickness)
-            cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[4],bbox[5]), class_colors[bbox[-1]], thickness)
-            cv2.line(cv_im,(bbox[2],bbox[3]),(bbox[6],bbox[7]), class_colors[bbox[-1]], thickness)
-            cv2.line(cv_im,(bbox[4],bbox[5]),(bbox[6],bbox[7]), class_colors[bbox[-1]], thickness)
-            cent_x = int((bbox[0] + bbox[2] + bbox[4] + bbox[6])/4.0)
-            cent_y = int((bbox[1] + bbox[3] + bbox[5] + bbox[7])/4.0)
-            
-            cv2.line(cv_im,(bbox[0]+bbox[8],bbox[1]+bbox[9]),(bbox[2]+bbox[8],bbox[3]+bbox[9]), class_colors[bbox[-1]], thickness)
-            cv2.line(cv_im,(bbox[0]+bbox[8],bbox[1]+bbox[9]),(bbox[4]+bbox[8],bbox[5]+bbox[9]), class_colors[bbox[-1]], thickness)
-            cv2.line(cv_im,(bbox[2]+bbox[8],bbox[3]+bbox[9]),(bbox[6]+bbox[8],bbox[7]+bbox[9]), class_colors[bbox[-1]], thickness)
-            cv2.line(cv_im,(bbox[4]+bbox[8],bbox[5]+bbox[9]),(bbox[6]+bbox[8],bbox[7]+bbox[9]), class_colors[bbox[-1]], thickness)
-            
-            plot_text(cv_im,(bbox[0],bbox[1]),bbox[-1],0,class_colors,self.classes)
-        
-        
+        if self.label_format == "tailed_footprint":
+            for bbox in label:
+                thickness = 2
+                bbox = bbox.int().data.numpy()
+                cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[2],bbox[3]), class_colors[bbox[-1]], thickness)
+                cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[4],bbox[5]), class_colors[bbox[-1]], thickness)
+                cv2.line(cv_im,(bbox[2],bbox[3]),(bbox[6],bbox[7]), class_colors[bbox[-1]], thickness)
+                cv2.line(cv_im,(bbox[4],bbox[5]),(bbox[6],bbox[7]), class_colors[bbox[-1]], thickness)
+                cent_x = int((bbox[0] + bbox[2] + bbox[4] + bbox[6])/4.0)
+                cent_y = int((bbox[1] + bbox[3] + bbox[5] + bbox[7])/4.0)
+                
+                cv2.line(cv_im,(bbox[0]+bbox[8],bbox[1]+bbox[9]),(bbox[2]+bbox[8],bbox[3]+bbox[9]), class_colors[bbox[-1]], thickness)
+                cv2.line(cv_im,(bbox[0]+bbox[8],bbox[1]+bbox[9]),(bbox[4]+bbox[8],bbox[5]+bbox[9]), class_colors[bbox[-1]], thickness)
+                cv2.line(cv_im,(bbox[2]+bbox[8],bbox[3]+bbox[9]),(bbox[6]+bbox[8],bbox[7]+bbox[9]), class_colors[bbox[-1]], thickness)
+                cv2.line(cv_im,(bbox[4]+bbox[8],bbox[5]+bbox[9]),(bbox[6]+bbox[8],bbox[7]+bbox[9]), class_colors[bbox[-1]], thickness)
+                
+                plot_text(cv_im,(bbox[0],bbox[1]),bbox[-1],0,class_colors,self.classes)
+                
+        elif self.label_format == "8_corners":
+            for bbox in label:
+                thickness = 2
+                bbox = bbox.int().data.numpy()
+                cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[2],bbox[3]), class_colors[bbox[-1]], thickness)
+                cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[4],bbox[5]), class_colors[bbox[-1]], thickness)
+                cv2.line(cv_im,(bbox[2],bbox[3]),(bbox[6],bbox[7]), class_colors[bbox[-1]], thickness)
+                cv2.line(cv_im,(bbox[4],bbox[5]),(bbox[6],bbox[7]), class_colors[bbox[-1]], thickness)
+                
+                cv2.line(cv_im,(bbox[8],bbox[9]),(bbox[10],bbox[11]), class_colors[bbox[-1]], thickness)
+                cv2.line(cv_im,(bbox[8],bbox[9]),(bbox[12],bbox[13]), class_colors[bbox[-1]], thickness)
+                cv2.line(cv_im,(bbox[10],bbox[11]),(bbox[14],bbox[15]), class_colors[bbox[-1]], thickness)
+                cv2.line(cv_im,(bbox[12],bbox[13]),(bbox[14],bbox[15]), class_colors[bbox[-1]], thickness)
+                
+                cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[8],bbox[9]), class_colors[bbox[-1]], thickness)
+                cv2.line(cv_im,(bbox[2],bbox[3]),(bbox[10],bbox[11]), class_colors[bbox[-1]], thickness)
+                cv2.line(cv_im,(bbox[4],bbox[5]),(bbox[12],bbox[13]), class_colors[bbox[-1]], thickness)
+                cv2.line(cv_im,(bbox[6],bbox[7]),(bbox[14],bbox[15]), class_colors[bbox[-1]], thickness)
+
         # for region in metadata["ignored_regions"]:
         #     bbox = region.astype(int)
         #     cv2.rectangle(cv_im,(bbox[0],bbox[1]),(bbox[2],bbox[3]), class_colors[-1], 1)
@@ -423,10 +569,10 @@ if __name__ == "__main__":
     cache_dir = "/home/worklab/Data/cv/cached_3D_oct2020_dataset"    
     
     #cache_frames(label_dir,vid_dir,cache_dir,skip_frames = 0)
-    test = Detection_Dataset(cache_dir,label_format = "tailed_footprint",mode = "test")
+    test = Detection_Dataset(cache_dir,label_format = "8_corners",mode = "test")
     
     for i in range(1000):
         idx = np.random.randint(0,len(test))
 
-        test.show(10)
+        test.show(idx)
     cv2.destroyAllWindows()

@@ -76,12 +76,12 @@ def plot_detections(dataset,retinanet):
 
         scores,labels, boxes = retinanet(im)
 
-    if len(boxes) > 0:
-        keep = []    
-        for i in range(len(scores)):
-            if scores[i] > 0.5:
-                keep.append(i)
-        boxes = boxes[keep,:]
+    # if len(boxes) > 0:
+    #     keep = []    
+    #     for i in range(len(scores)):
+    #         if scores[i] > 0.5:
+    #             keep.append(i)
+    #     boxes = boxes[keep,:]
     im = dataset.denorm(im[0])
     cv_im = np.array(im.cpu()) 
     cv_im = np.clip(cv_im, 0, 1)
@@ -93,33 +93,42 @@ def plot_detections(dataset,retinanet):
     cv_im = cv_im.copy()
 
     thickness = 1
-    for box in gt:
-        bbox = box.int().data.cpu().numpy()
+    for bbox in gt:
+        thickness = 1
+        bbox = bbox.int().data.cpu().numpy()
         cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[2],bbox[3]), (0,1.0,0), thickness)
         cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[4],bbox[5]), (0,1.0,0), thickness)
         cv2.line(cv_im,(bbox[2],bbox[3]),(bbox[6],bbox[7]), (0,1.0,0), thickness)
         cv2.line(cv_im,(bbox[4],bbox[5]),(bbox[6],bbox[7]), (0,1.0,0), thickness)
-        cent_x = int((bbox[0] + bbox[2] + bbox[4] + bbox[6])/4.0)
-        cent_y = int((bbox[1] + bbox[3] + bbox[5] + bbox[7])/4.0)
         
-        cv2.line(cv_im,(bbox[0]+bbox[8],bbox[1]+bbox[9]),(bbox[2]+bbox[8],bbox[3]+bbox[9]), (0,1.0,0), thickness)
-        cv2.line(cv_im,(bbox[0]+bbox[8],bbox[1]+bbox[9]),(bbox[4]+bbox[8],bbox[5]+bbox[9]), (0,1.0,0), thickness)
-        cv2.line(cv_im,(bbox[2]+bbox[8],bbox[3]+bbox[9]),(bbox[6]+bbox[8],bbox[7]+bbox[9]), (0,1.0,0), thickness)
-        cv2.line(cv_im,(bbox[4]+bbox[8],bbox[5]+bbox[9]),(bbox[6]+bbox[8],bbox[7]+bbox[9]), (0,1.0,0), thickness)
+        cv2.line(cv_im,(bbox[8],bbox[9]),(bbox[10],bbox[11]), (0,1.0,0), thickness)
+        cv2.line(cv_im,(bbox[8],bbox[9]),(bbox[12],bbox[13]), (0,1.0,0), thickness)
+        cv2.line(cv_im,(bbox[10],bbox[11]),(bbox[14],bbox[15]), (0,1.0,0), thickness)
+        cv2.line(cv_im,(bbox[12],bbox[13]),(bbox[14],bbox[15]), (0,1.0,0), thickness)
+        
+        cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[8],bbox[9]), (0,1.0,0), thickness)
+        cv2.line(cv_im,(bbox[2],bbox[3]),(bbox[10],bbox[11]), (0,1.0,0), thickness)
+        cv2.line(cv_im,(bbox[4],bbox[5]),(bbox[12],bbox[13]), (0,1.0,0), thickness)
+        cv2.line(cv_im,(bbox[6],bbox[7]),(bbox[14],bbox[15]), (0,1.0,0), thickness)
     
-    for box in boxes:
-        bbox = box.int().data.cpu().numpy()
+    for bbox in boxes:
+        thickness = 1
+        bbox = bbox.int().data.cpu().numpy()
         cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[2],bbox[3]), (0,0,1.0), thickness)
         cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[4],bbox[5]), (0,0,1.0), thickness)
         cv2.line(cv_im,(bbox[2],bbox[3]),(bbox[6],bbox[7]), (0,0,1.0), thickness)
         cv2.line(cv_im,(bbox[4],bbox[5]),(bbox[6],bbox[7]), (0,0,1.0), thickness)
-        cent_x = int((bbox[0] + bbox[2] + bbox[4] + bbox[6])/4.0)
-        cent_y = int((bbox[1] + bbox[3] + bbox[5] + bbox[7])/4.0)
         
-        cv2.line(cv_im,(bbox[0]+bbox[8],bbox[1]+bbox[9]),(bbox[2]+bbox[8],bbox[3]+bbox[9]), (0,0,1.0), thickness)
-        cv2.line(cv_im,(bbox[0]+bbox[8],bbox[1]+bbox[9]),(bbox[4]+bbox[8],bbox[5]+bbox[9]), (0,0,1.0), thickness)
-        cv2.line(cv_im,(bbox[2]+bbox[8],bbox[3]+bbox[9]),(bbox[6]+bbox[8],bbox[7]+bbox[9]), (0,0,1.0), thickness)
-        cv2.line(cv_im,(bbox[4]+bbox[8],bbox[5]+bbox[9]),(bbox[6]+bbox[8],bbox[7]+bbox[9]), (0,0,1.0), thickness)
+        cv2.line(cv_im,(bbox[8],bbox[9]),(bbox[10],bbox[11]), (0,0,1.0), thickness)
+        cv2.line(cv_im,(bbox[8],bbox[9]),(bbox[12],bbox[13]), (0,0,1.0), thickness)
+        cv2.line(cv_im,(bbox[10],bbox[11]),(bbox[14],bbox[15]), (0,0,1.0), thickness)
+        cv2.line(cv_im,(bbox[12],bbox[13]),(bbox[14],bbox[15]), (0,0,1.0), thickness)
+        
+        cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[8],bbox[9]), (0,0,1.0), thickness)
+        cv2.line(cv_im,(bbox[2],bbox[3]),(bbox[10],bbox[11]), (0,0,1.0), thickness)
+        cv2.line(cv_im,(bbox[4],bbox[5]),(bbox[12],bbox[13]), (0,0,1.0), thickness)
+        cv2.line(cv_im,(bbox[6],bbox[7]),(bbox[14],bbox[15]), (0,0,1.0), thickness)
+        
     cv2.imshow("Frame",cv_im)
     cv2.waitKey(2000)
 
@@ -136,7 +145,7 @@ if __name__ == "__main__":
     patience = 4
     max_epochs = 200
     start_epoch = 0
-    checkpoint_file = None #"detector_resnet50_e5.pt"
+    checkpoint_file = "detector_resnet50_e28.pt"
 
     # Paths to data here
     
@@ -161,15 +170,15 @@ if __name__ == "__main__":
 
     # reinitialize some stuff
     retinanet.classificationModel.output.weight = torch.nn.Parameter(torch.rand([9*num_classes,256,3,3]) *  1e-04)
-    retinanet.regressionModel.output.weight = torch.nn.Parameter(torch.rand([9*10,256,3,3]) * 1e-04)
+    retinanet.regressionModel.output.weight = torch.nn.Parameter(torch.rand([9*8,256,3,3]) * 1e-04)
     
     # create dataloaders
     try:
         train_data
     except:
         # get dataloaders
-        train_data = Detection_Dataset(data_dir,mode = "train")
-        val_data   = Detection_Dataset(data_dir,mode = "test")
+        train_data = Detection_Dataset(data_dir,label_format = "8_corners",mode = "train")
+        val_data   = Detection_Dataset(data_dir,label_format = "8_corners",mode = "test")
         params = {'batch_size' : 4,
               'shuffle'    : True,
               'num_workers': 0,
@@ -205,7 +214,7 @@ if __name__ == "__main__":
     retinanet.train()
     #retinanet.module.freeze_bn()
     
-    optimizer = optim.Adam(retinanet.parameters(), lr=1e-5)
+    optimizer = optim.Adam(retinanet.parameters(), lr=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=patience, verbose=True, mode = "min")
     loss_hist = collections.deque(maxlen=500)
     most_recent_mAP = 0
@@ -237,9 +246,9 @@ if __name__ == "__main__":
                     classification_loss, regression_loss = retinanet([im.float(),label.float()])
 
                 classification_loss = classification_loss.mean() 
-                regression_loss = regression_loss.mean()
+                regression_loss = regression_loss.mean() *10.0
 
-                loss = classification_loss + 10.0 * regression_loss
+                loss = classification_loss + regression_loss
 
                 if bool(loss == 0):
                     continue

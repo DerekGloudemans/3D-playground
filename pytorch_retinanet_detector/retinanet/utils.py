@@ -99,15 +99,35 @@ class BBoxTransform(nn.Module):
         else:
             self.std = std
 
-    def forward(self, boxes, preds):
+    def forward(self, boxes, regression):
 
         widths  = boxes[:, :, 2] - boxes[:, :, 0]
         heights = boxes[:, :, 3] - boxes[:, :, 1]
         ctr_x   = boxes[:, :, 0] + 0.5 * widths
         ctr_y   = boxes[:, :, 1] + 0.5 * heights
 
-        preds[:,:,[0,2,4,6]] = preds[:,:,[0,2,4,6]] * (widths).unsqueeze(2).repeat(1,1,4) + ctr_x.unsqueeze(2).repeat(1,1,4)
-        preds[:,:,[1,3,5,7]] = preds[:,:,[1,3,5,7]] * (heights).unsqueeze(2).repeat(1,1,4) + ctr_y.unsqueeze(2).repeat(1,1,4)
+        preds = torch.zeros([regression.shape[0],regression.shape[1],16]).cuda()
+        preds[:,:,0] = regression[:,:,0] - regression[:,:,2] - regression[:,:,4] - regression[:,:,6]
+        preds[:,:,1] = regression[:,:,1] - regression[:,:,3] - regression[:,:,5] - regression[:,:,7]
+        preds[:,:,2] = regression[:,:,0] + regression[:,:,2] - regression[:,:,4] - regression[:,:,6]
+        preds[:,:,3] = regression[:,:,1] + regression[:,:,3] - regression[:,:,5] - regression[:,:,7]
+        preds[:,:,4] = regression[:,:,0] - regression[:,:,2] + regression[:,:,4] - regression[:,:,6]
+        preds[:,:,5] = regression[:,:,1] - regression[:,:,3] + regression[:,:,5] - regression[:,:,7]
+        preds[:,:,6] = regression[:,:,0] + regression[:,:,2] + regression[:,:,4] - regression[:,:,6]
+        preds[:,:,7] = regression[:,:,1] + regression[:,:,3] + regression[:,:,5] - regression[:,:,7]
+        
+        preds[:,:,8]  = regression[:,:,0] - regression[:,:,2] - regression[:,:,4] + regression[:,:,6]
+        preds[:,:,9]  = regression[:,:,1] - regression[:,:,3] - regression[:,:,5] + regression[:,:,7]
+        preds[:,:,10] = regression[:,:,0] + regression[:,:,2] - regression[:,:,4] + regression[:,:,6]
+        preds[:,:,11] = regression[:,:,1] + regression[:,:,3] - regression[:,:,5] + regression[:,:,7]
+        preds[:,:,12] = regression[:,:,0] - regression[:,:,2] + regression[:,:,4] + regression[:,:,6]
+        preds[:,:,13] = regression[:,:,1] - regression[:,:,3] + regression[:,:,5] + regression[:,:,7]
+        preds[:,:,14] = regression[:,:,0] + regression[:,:,2] + regression[:,:,4] + regression[:,:,6]
+        preds[:,:,15] = regression[:,:,1] + regression[:,:,3] + regression[:,:,5] + regression[:,:,7]
+    
+        # currently, coords are relative to anchor box size - scale them to be relative to overall frame
+        preds[:,:,[0,2,4,6,8,10,12,14]] = preds[:,:,[0,2,4,6,8,10,12,14]] * (widths).unsqueeze(2).repeat(1,1,8) + ctr_x.unsqueeze(2).repeat(1,1,8)
+        preds[:,:,[1,3,5,7,9,11,13,15]] = preds[:,:,[1,3,5,7,9,11,13,15]] * (heights).unsqueeze(2).repeat(1,1,8) + ctr_y.unsqueeze(2).repeat(1,1,8)
 
         # pred_ctr_x = ctr_x + dx * widths
         # pred_ctr_y = ctr_y + dy * heights

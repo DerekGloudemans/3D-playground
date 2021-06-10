@@ -78,7 +78,7 @@ class PyramidFeatures(nn.Module):
 
 
 class RegressionModel(nn.Module):
-    def __init__(self, num_features_in, num_anchors=9, feature_size=256,n_outputs = 10):
+    def __init__(self, num_features_in, num_anchors=9, feature_size=256,n_outputs = 8):
         super(RegressionModel, self).__init__()
         self.n_outputs = n_outputs 
         
