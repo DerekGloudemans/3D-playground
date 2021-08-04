@@ -106,6 +106,10 @@ class BBoxTransform(nn.Module):
         ctr_x   = boxes[:, :, 0] + 0.5 * widths
         ctr_y   = boxes[:, :, 1] + 0.5 * heights
 
+        # angle bias
+        #regression[:,2:] -= 0.5             
+
+
         preds = torch.zeros([regression.shape[0],regression.shape[1],16]).cuda()
         preds[:,:,0] = regression[:,:,0] - regression[:,:,2] - regression[:,:,4] - regression[:,:,6]
         preds[:,:,1] = regression[:,:,1] - regression[:,:,3] - regression[:,:,5] - regression[:,:,7]

@@ -178,6 +178,9 @@ class FocalLoss(nn.Module):
             
                 regression = regression[positive_indices,:]
                 
+                # try to introduce bias so all directions are equally possible anglewise /???
+                #regression[:,2:] -= 0.5             
+                
                 preds = torch.zeros([regression.shape[0],16],requires_grad = True).cuda()
                 preds[:,0] = regression[:,0] - regression[:,2] - regression[:,4] - regression[:,6]
                 preds[:,1] = regression[:,1] - regression[:,3] - regression[:,5] - regression[:,7]

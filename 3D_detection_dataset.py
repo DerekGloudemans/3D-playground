@@ -392,7 +392,7 @@ if __name__ == "__main__":
     vid_dir = "/home/worklab/Data/cv/video/5_min_18_cam_October_2020/ingest_session_00005/recording"
     cache_dir = "/home/worklab/Data/cv/cached_3D_oct2020_dataset"    
     
-    cache_frames(label_dir,vid_dir,cache_dir,skip_frames = 1)
+    #cache_frames(label_dir,vid_dir,cache_dir,skip_frames = 1)
     test = Detection_Dataset(cache_dir,label_format = "tailed_footprint")
     
     for i in range(10):

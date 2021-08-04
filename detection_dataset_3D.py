@@ -337,7 +337,7 @@ class Detection_Dataset(data.Dataset):
         im_t = self.im_tf(im)
         
         TILE = np.random.rand()
-        TILE = 0.6
+        #TILE = 0
         if TILE > 0.25:
             # find min and max x coordinate for each bbox
             occupied_x = []
@@ -350,29 +350,33 @@ class Detection_Dataset(data.Dataset):
                 occupied_x.append([xmin,xmax])
                 occupied_y.append([ymin,ymax])
             
+            attempts = 0
             good = False
-            while not good:
+            while not good and attempts < 10:
                 good = True
                 xsplit = np.random.randint(0,im.size[0])
                 for rang in occupied_x:
                     if xsplit > rang[0] and xsplit < rang[1]:
                         good = False
+                        attempts += 1
                         break
                 if good:
                     break
             
+            attempts = 0
             good = False
-            while not good:
+            while not good and attempts < 10:
                 good = True
                 ysplit = np.random.randint(0,im.size[1])
                 for rang in occupied_y:
                     if ysplit > rang[0] and ysplit < rang[1]:
                         good = False
+                        attempts += 1
                         break
                 if good:
                     break
             
-            print(xsplit,ysplit)
+            #print(xsplit,ysplit)
             
             im11 = im_t[:,:ysplit,:xsplit]
             im12 = im_t[:,ysplit:,:xsplit]
@@ -548,7 +552,6 @@ def collate(inputs):
             num_objs = len(label[idx])
             
             labels[idx,:num_objs,:] = label[idx]
-            
         return ims,labels
 
 

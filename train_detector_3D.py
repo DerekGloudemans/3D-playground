@@ -22,13 +22,14 @@ from torch.utils import data
 from torch import optim
 import collections
 import torch.nn as nn
+import torchvision.transforms.functional as F
 
 # add relevant packages and directories to path
-detector_path = os.path.join(os.getcwd(),"pytorch_retinanet_detector")
+detector_path = os.path.join(os.getcwd(),"pytorch_retinanet_detector_multitask")
 sys.path.insert(0,detector_path)
-from pytorch_retinanet_detector.retinanet.model import resnet50 
+from pytorch_retinanet_detector_multitask.retinanet.model import resnet50 
 
-from detection_dataset_3D import Detection_Dataset, collate
+from detection_dataset_3D_multitask import Detection_Dataset, collate
 
 
 # surpress XML warnings (for UA detrac data)
@@ -57,13 +58,83 @@ def to_cpu(checkpoint):
     torch.save(new_state_dict, "cpu_{}".format(checkpoint))
     print ("Successfully created: cpu_{}".format(checkpoint))
 
+def test_detector_video(retinanet,video_path,dataset,break_after = 500):
+    """
+    Use current detector on frames from specified video
+    """
+    retinanet.training = False
+    retinanet.eval()
+    cap = cv2.VideoCapture(video_path)
+    
+    for i in range(break_after):
+        
+        
+        ret,frame = cap.read()
+        if not ret:
+            break
+        
+        frame = cv2.resize(frame,(1920,1080))
+        frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
+
+        frame = F.to_tensor(frame)
+        #frame = frame.permute((2,0,1))
+        
+        frame = F.normalize(frame,mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225])
+
+        im = frame.to(device).unsqueeze(0).float()
+        
+        with torch.no_grad():
+            scores,labels,boxes = retinanet(im)
+         
+        if len(boxes) > 0:
+            keep = []    
+            for i in range(len(scores)):
+                if scores[i] > 0.3:
+                    keep.append(i)
+            boxes = boxes[keep,:]
+        im = dataset.denorm(im[0])
+        cv_im = np.array(im.cpu()) 
+        cv_im = np.clip(cv_im, 0, 1)
+    
+        # Convert RGB to BGR 
+        cv_im = cv_im[::-1, :, :]  
+        cv_im = cv_im.transpose((1,2,0))
+        cv_im = cv_im.copy()
+    
+        thickness = 1
+        
+        for bbox in boxes:
+            thickness = 1
+            bbox = bbox.int().data.cpu().numpy()
+            cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[2],bbox[3]), (0,0,1.0), thickness)
+            cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[4],bbox[5]), (0,0,1.0), thickness)
+            cv2.line(cv_im,(bbox[2],bbox[3]),(bbox[6],bbox[7]), (0,0,1.0), thickness)
+            cv2.line(cv_im,(bbox[4],bbox[5]),(bbox[6],bbox[7]), (0,0,1.0), thickness)
+            
+            cv2.line(cv_im,(bbox[8],bbox[9]),(bbox[10],bbox[11]), (0,0,1.0), thickness)
+            cv2.line(cv_im,(bbox[8],bbox[9]),(bbox[12],bbox[13]), (0,0,1.0), thickness)
+            cv2.line(cv_im,(bbox[10],bbox[11]),(bbox[14],bbox[15]), (0,0,1.0), thickness)
+            cv2.line(cv_im,(bbox[12],bbox[13]),(bbox[14],bbox[15]), (0,0,1.0), thickness)
+            
+            cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[8],bbox[9]), (0,0,1.0), thickness)
+            cv2.line(cv_im,(bbox[2],bbox[3]),(bbox[10],bbox[11]), (0,0,1.0), thickness)
+            cv2.line(cv_im,(bbox[4],bbox[5]),(bbox[12],bbox[13]), (0,0,1.0), thickness)
+            cv2.line(cv_im,(bbox[6],bbox[7]),(bbox[14],bbox[15]), (0,0,1.0), thickness)
+            
+        cv2.imshow("Frame",cv_im)
+        cv2.waitKey(1)
+            
+    cv2.destroyAllWindows()
+    cap.release()
+
 def plot_detections(dataset,retinanet):
     """
     Plots detections output
     """
     retinanet.training = False
     retinanet.eval()
-
+    
     idx = np.random.randint(0,len(dataset))
 
     im,gt = dataset[idx]
@@ -76,12 +147,12 @@ def plot_detections(dataset,retinanet):
 
         scores,labels, boxes = retinanet(im)
 
-    # if len(boxes) > 0:
-    #     keep = []    
-    #     for i in range(len(scores)):
-    #         if scores[i] > 0.5:
-    #             keep.append(i)
-    #     boxes = boxes[keep,:]
+    if len(boxes) > 0:
+        keep = []    
+        for i in range(len(scores)):
+            if scores[i] > 0.5:
+                keep.append(i)
+        boxes = boxes[keep,:]
     im = dataset.denorm(im[0])
     cv_im = np.array(im.cpu()) 
     cv_im = np.clip(cv_im, 0, 1)
@@ -110,6 +181,9 @@ def plot_detections(dataset,retinanet):
         cv2.line(cv_im,(bbox[2],bbox[3]),(bbox[10],bbox[11]), (0,1.0,0), thickness)
         cv2.line(cv_im,(bbox[4],bbox[5]),(bbox[12],bbox[13]), (0,1.0,0), thickness)
         cv2.line(cv_im,(bbox[6],bbox[7]),(bbox[14],bbox[15]), (0,1.0,0), thickness)
+        
+        cv2.rectangle(cv_im,(bbox[16],bbox[17]),(bbox[18],bbox[19]),(0,0.5,0),thickness)
+
     
     for bbox in boxes:
         thickness = 1
@@ -129,12 +203,14 @@ def plot_detections(dataset,retinanet):
         cv2.line(cv_im,(bbox[4],bbox[5]),(bbox[12],bbox[13]), (0,0,1.0), thickness)
         cv2.line(cv_im,(bbox[6],bbox[7]),(bbox[14],bbox[15]), (0,0,1.0), thickness)
         
+        cv2.rectangle(cv_im,(bbox[16],bbox[17]),(bbox[18],bbox[19]),(0,0,0.5),thickness)
+        
     cv2.imshow("Frame",cv_im)
     cv2.waitKey(2000)
 
     retinanet.train()
     retinanet.training = True
-    #retinanet.module.freeze_bn()
+    retinanet.module.freeze_bn()
 
 
 if __name__ == "__main__":
@@ -144,13 +220,14 @@ if __name__ == "__main__":
     num_classes = 8
     patience = 4
     max_epochs = 200
-    start_epoch = 0
-    checkpoint_file = "detector_resnet50_e28.pt"
+    start_epoch = 8
+    checkpoint_file = "mutlitask__e62.pt"
 
     # Paths to data here
     
     data_dir = "/home/worklab/Data/cv/cached_3D_oct2020_dataset"    
-
+    video_path = "/home/worklab/Data/cv/video/ground_truth_video_06162021/record_47_p1c2_00000.mp4"
+    
     ###########################################################################
 
 
@@ -170,8 +247,8 @@ if __name__ == "__main__":
 
     # reinitialize some stuff
     retinanet.classificationModel.output.weight = torch.nn.Parameter(torch.rand([9*num_classes,256,3,3]) *  1e-04)
-    retinanet.regressionModel.output.weight = torch.nn.Parameter(torch.rand([9*8,256,3,3]) * 1e-04)
-    
+    retinanet.regressionModel.output.weight = torch.nn.Parameter(torch.rand([9*12,256,3,3]) * 1e-04)
+
     # create dataloaders
     try:
         train_data
@@ -179,7 +256,7 @@ if __name__ == "__main__":
         # get dataloaders
         train_data = Detection_Dataset(data_dir,label_format = "8_corners",mode = "train")
         val_data   = Detection_Dataset(data_dir,label_format = "8_corners",mode = "test")
-        params = {'batch_size' : 4,
+        params = {'batch_size' : 12,
               'shuffle'    : True,
               'num_workers': 0,
               'drop_last'  : True,
@@ -194,7 +271,7 @@ if __name__ == "__main__":
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda:0" if use_cuda else "cpu")
     if use_cuda:
-        if False and torch.cuda.device_count() > 1:
+        if  torch.cuda.device_count() > 1:
             retinanet = torch.nn.DataParallel(retinanet,device_ids = [0,1,2])
             retinanet = retinanet.to(device)
         else:
@@ -212,9 +289,9 @@ if __name__ == "__main__":
     # training mode
     retinanet.training = True
     retinanet.train()
-    #retinanet.module.freeze_bn()
+    retinanet.module.freeze_bn()
     
-    optimizer = optim.Adam(retinanet.parameters(), lr=1e-4)
+    optimizer = optim.Adam(retinanet.parameters(), lr=1e-3)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=patience, verbose=True, mode = "min")
     loss_hist = collections.deque(maxlen=500)
     most_recent_mAP = 0
@@ -225,10 +302,11 @@ if __name__ == "__main__":
     # main training loop 
     for epoch_num in range(start_epoch,max_epochs):
 
+        test_detector_video(retinanet, video_path, val_data)
 
         print("Starting epoch {}".format(epoch_num))
         retinanet.train()
-        #retinanet.module.freeze_bn()
+        retinanet.module.freeze_bn()
         epoch_loss = []
 
 
@@ -236,15 +314,14 @@ if __name__ == "__main__":
             
             retinanet.train()
             retinanet.training = True
-            #retinanet.module.freeze_bn()    
-            
+            retinanet.module.freeze_bn()    
             try:
                 optimizer.zero_grad()
                 if torch.cuda.is_available():
                     classification_loss, regression_loss = retinanet([im.to(device).float(), label.to(device).float()])
                 else:
                     classification_loss, regression_loss = retinanet([im.float(),label.float()])
-
+                
                 classification_loss = classification_loss.mean() 
                 regression_loss = regression_loss.mean() *10.0
 
@@ -262,8 +339,8 @@ if __name__ == "__main__":
                 loss_hist.append(float(loss))
 
                 epoch_loss.append(float(loss))
-
-                if iter_num % 1 == 0:
+                 
+                if iter_num % 2 == 0:
                     print(
                         'Epoch: {} | Iteration: {} | Classification loss: {:1.5f} | Regression loss: {:1.5f} | Running loss: {:1.5f}'.format(
                             epoch_num, iter_num, float(classification_loss), float(regression_loss), np.mean(loss_hist)))
@@ -272,18 +349,19 @@ if __name__ == "__main__":
 
                 del classification_loss
                 del regression_loss
+                torch.cuda.empty_cache()
+                
             except Exception as e:
                 print(e)
                 continue
 
         print("Epoch {} training complete".format(epoch_num))
-       
 
         scheduler.step(np.mean(epoch_loss))
         torch.cuda.empty_cache()
         
         #save checkpoint every epoch
-        PATH = "detector_resnet50_e{}.pt".format(epoch_num)
+        PATH = "mutlitask__e{}.pt".format(epoch_num)
         torch.save(retinanet.state_dict(),PATH)
         torch.cuda.empty_cache()
         time.sleep(30) # to cool down GPUs I guess
