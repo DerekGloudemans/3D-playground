@@ -21,23 +21,47 @@ import torch
 from torch.utils import data
 from torchvision import transforms
 
-def cache_frames(label_directory,video_directory,output_dir,skip_frames = 29):
+def cache_corrected_frames(label_directory,video_directory,last_corrected_frame,output_dir,skip_frames = 29):
     """
-    Caches every skip_frames frames as an image file for easier loading for detector training
+    Caches all corrected frames for each file
     label_directory - string - path to label csv files
     video_directory - string - path to mp4 video files
-    skip_frames - int - skip this many frames between cached frames
+    last_corrected_frame - a dict with keys like 'p1c1' and integer last frame values, -1 if file has not been corrected
     output_dir - output cached dataset directory. This directory should contain a subdirectory "frames"
     """
     
+    # to prevent automatic overwriting, as this takes a decent amount of time and cannot be interrupted without corrupting files
+    input("Press enter to confirm you would like to re-cache frames")
+    
+    total_frame_count = 0
     all_data = [] # each item will be a tuple of image_path,labels
     
     label_files = [os.path.join(label_directory,item) for item in os.listdir(label_directory)]
     
     for label_file in label_files: 
         
-        sequence_name = label_file.split("/")[-1].split("_track_outputs")[0]
+        sequence_name = label_file.split("/")[-1].split("_track_outputs")[0].split("rectified_")[1]
         
+        if sequence_name not in last_corrected_frame.keys():
+            continue # no corrected frames for this sequence
+        
+        else:
+            stop_frame = last_corrected_frame[sequence_name]
+            print("Processing sequence {}".format(sequence_name))
+        
+        camera_name = sequence_name.split("_")[0]
+        ignore_path = "ignored_regions/{}_ignored.csv".format(camera_name)
+        
+        ignore_polygon = []
+        if os.path.exists(ignore_path):
+            with open(ignore_path,"r") as f:
+                read = csv.reader(f)
+                for row in read:
+                    ignore_polygon.append( np.array([int(row[0]),int(row[1])]).astype(np.int32)  )
+        
+        ig = np.array(ignore_polygon)            
+        ig = ig[np.newaxis,:]
+
         frame_labels = {} # dictionary indexed by frame
         with open(label_file,"r") as f:
             read = csv.reader(f)
@@ -45,7 +69,13 @@ def cache_frames(label_directory,video_directory,output_dir,skip_frames = 29):
             for row in read:
                 
                 if not HEADERS:
+                    if len(row) == 0:
+                        continue
+                    
                     frame_idx = int(row[0])
+                    
+                    if frame_idx > stop_frame:
+                        break
                     
                     if frame_idx not in frame_labels.keys():
                         frame_labels[frame_idx] = [row]
@@ -63,32 +93,23 @@ def cache_frames(label_directory,video_directory,output_dir,skip_frames = 29):
         frame_num = 0
         REPLACE = False
         
-        while ret and frame_num < 2000:
+        while ret and frame_num <= stop_frame:
             
             # cache frame and append data to all_data if necessary
-            if frame_num % (skip_frames + 1) == 0 or REPLACE:
+            
+            if frame_num  not in frame_labels.keys():
+                frame_labels[frame_num] = []
                 
-                # verify that every box has a 3D box associated
-                REPLACE = False
-                try:
-                    for box in frame_labels[frame_num]:
-                        try:
-                            bbox3d = np.array(box[13:29]).astype(float)
-                            if len(bbox3d) != 16:
-                                REPLACE = True
-                                break
-                        except ValueError:
-                            REPLACE = True
-                            
-                except KeyError: # there are no boxes for this frame
-                    frame_labels[frame_num] = []
-                
-                if not REPLACE:
-                    output_name = os.path.join(output_dir,"frames","{}_{}.png".format(sequence_name,frame_num))
-                    all_data.append([output_name,frame_labels[frame_num]])
+            output_name = os.path.join(output_dir,"frames","{}_{}.png".format(sequence_name,frame_num))
+            all_data.append([output_name,frame_labels[frame_num]])
+            total_frame_count += 1
 
-                    frame = cv2.resize(frame,(1920,1080))
-                    cv2.imwrite(output_name,frame)
+            frame = cv2.resize(frame,(1920,1080))
+            
+            frame = cv2.fillPoly(frame,ig,(0,0,0))
+
+            
+            cv2.imwrite(output_name,frame)
             
             # get next frame
             ret,frame = cap.read()
@@ -100,7 +121,8 @@ def cache_frames(label_directory,video_directory,output_dir,skip_frames = 29):
     all_labels = os.path.join(output_dir,"labels.cpkl")
     with open(all_labels,"wb") as f:
         pickle.dump(all_data,f)
-    print("Saved labels")
+    
+    print("Cached {} total frames from all sequences.".format(total_frame_count))
 
 def pil_to_cv(pil_im):
     """ convert PIL image to cv2 image"""
@@ -615,21 +637,46 @@ def collate(inputs):
 
 if __name__ == "__main__":
     #### Test script here
-
-    # label_dir = "/home/worklab/Data/cv/i24_2D_October_2020/labels.csv"
-    # image_dir = "/home/worklab/Data/cv/i24_2D_October_2020/ims"
-    # test = Detection_Dataset(image_dir,label_dir)
-    # for i in range(100):
-    #     temp = test[i]
-    #     print(temp[1])
-    #     test.show(i)
         
+#%% cache frames
     
-    label_dir = "/home/worklab/Data/cv/cached_3D_oct2020_dataset/labels"
-    vid_dir = "/home/worklab/Data/cv/video/5_min_18_cam_October_2020/ingest_session_00005/recording"
-    cache_dir = "/home/worklab/Data/cv/cached_3D_oct2020_dataset"    
+    label_dir = "/home/worklab/Data/dataset_alpha/manual_correction"
+    vid_dir = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments"
+    cache_dir = "/home/worklab/Data/cv/dataset_alpha_cache_1a"    
     
-    #cache_frames(label_dir,vid_dir,cache_dir,skip_frames = 0)
+    
+    last_corrected_frame = {
+        
+        "p1c1_0":-1,
+        "p1c2_0":1000,
+        "p1c3_0":2340,
+        "p1c4_0":8999,
+        "p1c5_0":1000,
+        "p1c6_0":320,
+        
+        "p2c1_0":230,
+        "p2c2_0":215,
+        "p2c3_0":500,
+        "p2c4_0":405,
+        "p2c5_0":680,
+        "p2c6_0":300,
+        
+        "p3c1_0":200,
+        "p3c2_0":300,
+        "p3c3_0":200,
+        "p3c4_0":-1,
+        "p3c5_0":-1,
+        "p3c6_0":-1
+
+        }
+    
+    cache_corrected_frames(label_dir,vid_dir,last_corrected_frame,cache_dir)
+    
+    
+    
+    
+#%%   
+    
     test = Detection_Dataset(cache_dir,label_format = "8_corners",mode = "test")
     
     for i in range(1000):
