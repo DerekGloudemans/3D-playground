@@ -238,9 +238,26 @@ class Detection_Dataset(data.Dataset):
                 frame_boxes = [torch.zeros(21)]
             else:
                 for box in item[1]:
-                    cls = np.ones([1])* self.classes[box[3]]
-                    bbox2d = np.array(box[4:8]).astype(float) /2.0
-                    bbox3d = np.array(box[13:29]).astype(float) /2.0
+                                        
+                    try:
+                        cls = np.ones([1])* self.classes[box[3]]
+                    except:
+                        cls = np.zeros([1])
+                    
+                    try:
+                        bbox3d = np.array(box[11:27]).astype(float) 
+                    except:
+                        EXCLUDE = True
+                    
+                    try:
+                        bbox2d = np.array(box[4:8]).astype(float)
+                        
+                    except:
+                        bbox2d = np.zeros([4])
+                        bbox2d[0] = np.min(bbox3d[::2])
+                        bbox2d[1] = np.min(bbox3d[1::2])
+                        bbox2d[2] = np.max(bbox3d[::2])
+                        bbox2d[3] = np.max(bbox3d[1::2])
                     
                     # if len(bbox3d) != 16:
                     #     #EXCLUDE = True
@@ -252,7 +269,7 @@ class Detection_Dataset(data.Dataset):
                     frame_boxes.append(bbox)
                 
             
-            if True:  #not EXCLUDE:
+            if not EXCLUDE:
                 try:
                     frame_boxes = torch.stack(frame_boxes)
                 except:
@@ -284,7 +301,7 @@ class Detection_Dataset(data.Dataset):
         # load image and get label        
         y = self.labels[index].clone()
         im = Image.open(self.data[index])
-        camera_id = self.data[index].split("/")[-1].split("_")[1]
+        camera_id = self.data[index].split("/")[-1].split("_")[0]
         vps = self.vps[camera_id]
         vps = torch.tensor([vps[0][0],vps[0][1],vps[1][0],vps[1][1],vps[2][0],vps[2][1]])
         
@@ -576,8 +593,8 @@ class Detection_Dataset(data.Dataset):
                 bbox = bbox.int().data.numpy()
                 cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[2],bbox[3]), class_colors[bbox[cls_idx]], thickness)
                 cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[4],bbox[5]), class_colors[bbox[cls_idx]], thickness)
-                cv2.line(cv_im,(bbox[2],bbox[3]),(bbox[6],bbox[7]), class_colors[bbox[cls_idx]], thickness)
-                cv2.line(cv_im,(bbox[4],bbox[5]),(bbox[6],bbox[7]), class_colors[bbox[cls_idx]], thickness)
+                cv2.line(cv_im,(bbox[2],bbox[3]),(bbox[6],bbox[7]), (0,255,0), thickness)
+                cv2.line(cv_im,(bbox[4],bbox[5]),(bbox[6],bbox[7]), (255,0,0), thickness)
                 
                 cv2.line(cv_im,(bbox[8],bbox[9]),(bbox[10],bbox[11]), class_colors[bbox[cls_idx]], thickness)
                 cv2.line(cv_im,(bbox[8],bbox[9]),(bbox[12],bbox[13]), class_colors[bbox[cls_idx]], thickness)
@@ -587,9 +604,10 @@ class Detection_Dataset(data.Dataset):
                 cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[8],bbox[9]), class_colors[bbox[cls_idx]], thickness)
                 cv2.line(cv_im,(bbox[2],bbox[3]),(bbox[10],bbox[11]), class_colors[bbox[cls_idx]], thickness)
                 cv2.line(cv_im,(bbox[4],bbox[5]),(bbox[12],bbox[13]), class_colors[bbox[cls_idx]], thickness)
-                cv2.line(cv_im,(bbox[6],bbox[7]),(bbox[14],bbox[15]), class_colors[bbox[cls_idx]], thickness)
+                cv2.line(cv_im,(bbox[6],bbox[7]),(bbox[14],bbox[15]), (0,0,255), thickness)
 
                 cv2.rectangle(cv_im, (bbox[16],bbox[17]),(bbox[18],bbox[19]),class_colors[bbox[cls_idx]],thickness)
+                
                 
         
                 # draw line from center to vp1
@@ -670,7 +688,7 @@ if __name__ == "__main__":
 
         }
     
-    cache_corrected_frames(label_dir,vid_dir,last_corrected_frame,cache_dir)
+    #cache_corrected_frames(label_dir,vid_dir,last_corrected_frame,cache_dir)
     
     
     

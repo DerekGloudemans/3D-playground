@@ -29,8 +29,8 @@ detector_path = os.path.join(os.getcwd(),"pytorch_retinanet_detector_directional
 sys.path.insert(0,detector_path)
 from pytorch_retinanet_detector_directional.retinanet.model import resnet50 
 
-from detection_dataset_3D_multitask import Detection_Dataset, collate
-
+#from detection_dataset_3D_multitask import Detection_Dataset, collate
+from corrected_3D_dataset import Detection_Dataset, collate
 
 # surpress XML warnings (for UA detrac data)
 import warnings
@@ -58,7 +58,7 @@ def to_cpu(checkpoint):
     torch.save(new_state_dict, "cpu_{}".format(checkpoint))
     print ("Successfully created: cpu_{}".format(checkpoint))
 
-def test_detector_video(retinanet,video_path,dataset,break_after = 500):
+def test_detector_video(retinanet,video_path,dataset,break_after = 100):
     """
     Use current detector on frames from specified video
     """
@@ -123,7 +123,9 @@ def test_detector_video(retinanet,video_path,dataset,break_after = 500):
             cv2.line(cv_im,(bbox[6],bbox[7]),(bbox[14],bbox[15]), (0,0,1.0), thickness)
             
         cv2.imshow("Frame",cv_im)
-        cv2.waitKey(1)
+        key = cv2.waitKey(1)
+        if key == ord("q"):
+            break
             
     cv2.destroyAllWindows()
     cap.release()
@@ -168,8 +170,8 @@ def plot_detections(dataset,retinanet,plot_every,include_gt = False):
         thickness = 1
         bbox = bbox.int().data.cpu().numpy()
         cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[2],bbox[3]), (1.0,1.0,1.0), thickness)
-        cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[4],bbox[5]), (0,1.0,0), thickness) #green should be left bottom 
-        cv2.line(cv_im,(bbox[2],bbox[3]),(bbox[6],bbox[7]), (1.0,1.0,1.0), thickness)
+        cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[4],bbox[5]), (1.0,1.0,1.0), thickness) #green should be left bottom 
+        cv2.line(cv_im,(bbox[2],bbox[3]),(bbox[6],bbox[7]), (0,1.0,0), thickness)
         cv2.line(cv_im,(bbox[4],bbox[5]),(bbox[6],bbox[7]), (1.0,0,0), thickness) # blue should be rear bottom
         
         cv2.line(cv_im,(bbox[8],bbox[9]),(bbox[10],bbox[11]), (1.0,1.0,1.0), thickness)
@@ -179,8 +181,8 @@ def plot_detections(dataset,retinanet,plot_every,include_gt = False):
         
         cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[8],bbox[9]), (1.0,1.0,1.0), thickness)
         cv2.line(cv_im,(bbox[2],bbox[3]),(bbox[10],bbox[11]), (1.0,1.0,1.0), thickness)
-        cv2.line(cv_im,(bbox[4],bbox[5]),(bbox[12],bbox[13]), (0,0,1.0), thickness) # red should be back left
-        cv2.line(cv_im,(bbox[6],bbox[7]),(bbox[14],bbox[15]), (1.0,1.0,1.0), thickness)
+        cv2.line(cv_im,(bbox[4],bbox[5]),(bbox[12],bbox[13]), (1.0,1.0,1.0), thickness) # red should be back left
+        cv2.line(cv_im,(bbox[6],bbox[7]),(bbox[14],bbox[15]), (0,0,1.0), thickness)
      
     
     for bbox in gt:
@@ -205,7 +207,7 @@ def plot_detections(dataset,retinanet,plot_every,include_gt = False):
         cv2.rectangle(cv_im,(bbox[16],bbox[17]),(bbox[18],bbox[19]),gt_color,thickness)
         
         # circle in bottom left rear corner
-        cv2.circle(cv_im,(bbox[4],bbox[5]),4,gt_color,-1)
+        cv2.circle(cv_im,(bbox[6],bbox[7]),4,gt_color,-1)
         
         # plot goal axes
         # cv2.line(cv_im,(bbox[0],bbox[1]),(bbox[4],bbox[5]), (0,0,0), 3) #green should be left bottom 
@@ -256,14 +258,15 @@ if __name__ == "__main__":
     num_classes = 8
     patience = 4
     max_epochs = 100
-    start_epoch = 0
-    checkpoint_file =  "directional_v3_e15.pt"
+    start_epoch = 11
+    checkpoint_file =  "corrected_data_e10.pt" #"directional_v3_e15.pt"
     MULTI_GPU = True
     batch_size = 12 if MULTI_GPU else 2
     plot_every = 5
     # Paths to data here
     
     data_dir = "/home/worklab/Data/cv/cached_3D_oct2020_dataset"    
+    data_dir = "/home/worklab/Data/cv/dataset_alpha_cache_1a"    
     video_path = "/home/worklab/Data/cv/video/ground_truth_video_06162021/record_47_p1c2_00000.mp4"
     
     ###########################################################################
@@ -369,7 +372,7 @@ if __name__ == "__main__":
                 regression_loss = regression_loss.mean() 
                 vp_loss = vp_loss.mean()
                 
-                loss = classification_loss + regression_loss + 0.5*vp_loss
+                loss = classification_loss + regression_loss + vp_loss
 
                 if bool(loss == 0):
                     continue
@@ -407,7 +410,7 @@ if __name__ == "__main__":
         torch.cuda.empty_cache()
         
         #save checkpoint every epoch
-        PATH = "directional_v3_e{}.pt".format(epoch_num)
+        PATH = "corrected_data_e{}.pt".format(epoch_num)
         torch.save(retinanet.state_dict(),PATH)
         torch.cuda.empty_cache()
         time.sleep(30) # to cool down GPUs I guess

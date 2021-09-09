@@ -25,6 +25,7 @@ class FocalLoss(nn.Module):
     #def __init__(self):
 
     def forward(self, classifications, regressions, anchors, annotations):
+        top_weighting = 0.5
         alpha = 0.25
         gamma = 2.0
         batch_size = classifications.shape[0]
@@ -337,7 +338,10 @@ class FocalLoss(nn.Module):
 
                 #regression_diff = torch.abs(targets - regression[positive_indices, :])
                 regression_diff = torch.abs(targets - preds)
-
+            
+                # here, we underweight the top corner coords by a factor of self.top_weighting     
+                regression_diff[:,8:16] *= top_weighting
+                
                 regression_loss = torch.where(
                     torch.le(regression_diff, 1.0 / 9.0),
                     0.5 * 9.0 * torch.pow(regression_diff, 2),
