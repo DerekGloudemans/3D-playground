@@ -1,8 +1,87 @@
+# Attention interviewers!!! - this code is indicative of how I like to write. Not better, not worse.
+# Judge me based off of this
+# Thanks, Derek Gloudemans 2021
+
 import torch
 import numpy as np
 import cv2
 import sys, os
+import csv
 
+def line_to_point(line,point):
+    """
+    Given a line defined by two points, finds the distance from that line to the third point
+    line - (x0,y0,x1,y1) as floats
+    point - (x,y) as floats
+    Returns
+    -------
+    distance - float >= 0
+    """
+    
+    numerator = np.abs((line[2]-line[0])*(line[1]-point[1]) - (line[3]-line[1])*(line[0]-point[0]))
+    denominator = np.sqrt((line[2]-line[0])**2 +(line[3]-line[1])**2)
+    
+    return numerator / (denominator + 1e-08)
+
+def find_vanishing_point(lines):
+    """
+    Finds best (L2 norm) vanishing point given a list of lines
+
+    Parameters
+    ----------
+    lines : [(x0,y0,x1,y1), ...]
+
+    Returns
+    -------
+    vp - (x,y)
+    """
+    
+    # mx+b form
+    #y0 = ax + c
+    #y1 = bx + d
+    
+    line0 = lines[0]
+    line1 = lines[1]
+    a = (line0[3] - line0[1])/line0[2] - line0[0]
+    b = (line1[3] - line1[1])/line1[2] - line1[0]
+    c = line0[1] - a*line0[0]
+    d = line1[1] - c*line1[0]
+    
+    # intersection
+    px = (d-c)/(a-b)
+    py = a*(d-c)/(a-b) + c
+    best_dist = np.inf
+    
+    # using intersection as starting point, grid out a grid of 11 x 11 points with spacing g
+    g = 1e+16
+    n_pts = 31
+    
+    while g > 1:
+        #print("Gridding at g = {}".format(g))
+
+        # create grid centered around px,py with spacing g
+        
+        x_pts = np.arange(px-g*(n_pts//2),px+g*(n_pts//2),g)
+        y_pts = np.arange(py-g*(n_pts//2),py+g*(n_pts//2),g)
+        
+        for x in x_pts:
+            for y in y_pts:
+                # for each point in grid, compute average distance to vanishing point
+                dist = 0
+                for line in lines:
+                    dist += line_to_point(line,(x,y))**2
+                   
+                # keep best point in grid
+                if dist < best_dist:
+                    px = x 
+                    py = y
+                    best_dist = dist
+                    #print("Best vp so far: ({},{}), with average distance {}".format(px,py,np.sqrt(dist/len(lines))))
+    
+                # regrid
+        g = g / 10.0
+            
+    return [px,py]
 
 class Homographer():
     """
@@ -11,7 +90,7 @@ class Homographer():
     can have multiple camera/image correspondences
     """
 
-    def __init__(self,f1,f2):
+    def __init__(self,f1 = None,f2 = None):
         """
         Initializes Homgrapher object. 
         
@@ -27,12 +106,114 @@ class Homographer():
 
         """
         
-        self.f1 = f1
-        self.f2 = f2
+        if f1 is not None:
+            self.f1 = f1
+            self.f2 = f2
+        
+        else:
+            self.f1 = self.i24_space_to_state
+            self.f2 = self.i24_state_to_space
         
         # each correspondence is: name: {H,H_inv,P,corr_pts,space_pts,vps} 
         # where H and H inv are 3x34 planar homography matrices and P is a 3x4 projection matrix
         self.correspondence = {}
+    
+        self.class_heights = {
+                "sedan":4,
+                "midsize":5,
+                "van":6,
+                "pickup":5,
+                "semi":12,
+                "truck (other)":12,
+                "truck": 12,
+                "motorcycle":4,
+                "trailer":3,
+                "other":5
+            }
+    
+    def add_i24_camera(self,point_path,vp_path,camera_name):
+        # load points
+        corr_pts= []
+        space_pts = []
+        with open(point_path,"r") as f:
+            lines = f.readlines()
+            
+            for line in lines[1:-4]:
+                line = line.rstrip("\n").split(",")
+                corr_pts.append ([float(line[0]),float(line[1])])
+                space_pts.append([int(line[2]),int(line[3])])
+        
+        # load vps
+        lines1 = []
+        lines2 = []
+        lines3 = []
+        with open(vp_path,"r") as f:
+            read = csv.reader(f)
+            for item in read:
+                if item[4] == '0':
+                    lines1.append(np.array(item).astype(float))
+                elif item[4] == '1':
+                    lines2.append(np.array(item).astype(float))
+                elif item[4] == '2':
+                    lines3.append(np.array(item).astype(float))
+        
+        # get all axis labels for a particular axis orientation
+        vp1 = find_vanishing_point(lines1)
+        vp2 = find_vanishing_point(lines2)
+        vp3 = find_vanishing_point(lines3)
+        vps = [vp1,vp2,vp3]
+        
+        self.add_correspondence(corr_pts,space_pts,vps,name = camera_name)
+        
+    
+    def i24_space_to_state(self,points):
+        """
+        points - [d,8,3] array of x,y,z points for fbr,fbl,bbr,bbl,ftr,ftl,fbr,fbl
+        
+        returns - [d,6] array of points in state formulation
+        """
+        d = points.shape[0]
+        new_pts = torch.zeros([d,6])
+        
+        # rear center bottom of vehicle is (x,y)
+        
+        # x is computed as average of two bottom rear points
+        new_pts[:,0] = (points[:,2,0] + points[:,3,0]) / 2.0
+        
+        # y is computed as average 4 bottom point y values
+        new_pts[:,1] = (points[:,0,1] + points[:,1,1] +points[:,2,1] + points[:,3,1]) / 4.0
+        
+        # l is computed as avg length between bottom front and bottom rear
+        new_pts[:,2] = torch.abs ( ((points[:,0,0] + points[:,1,0]) - (points[:,2,0] + points[:,3,0]))/2.0 )
+        
+        # w is computed as avg length between botom left and bottom right
+        new_pts[:,3] = torch.abs(  ((points[:,0,1] + points[:,2,0]) - (points[:,1,0] + points[:,3,0]))/2.0)
+
+        # h is computed as avg length between all top and all bottom points
+        new_pts[:,4] = torch.mean(torch.abs( (points[:,0:4,2] - points[:,4:8,2])))
+        
+        # direction is +1 if vehicle is traveling along direction of increasing x, otherwise -1
+        new_pts[:,5] = torch.sign( ((points[:,0,0] + points[:,1,0]) - (points[:,2,0] + points[:,3,0]))/2.0 ) 
+                
+        return new_pts
+        
+    def i24_state_to_space(self,points):
+        d = points.shape[0]
+        new_pts = torch.zeros([d,8,3])
+        
+        # assign x values
+        new_pts[:,[0,1,4,5],0] = (points[:,0] + points[:,2]).unsqueeze(1).repeat(1,4)
+        new_pts[:,[2,3,6,7],0] = (points[:,0]).unsqueeze(1).repeat(1,4)
+        
+        # assign y values
+        new_pts[:,[0,2,4,6],1] = (points[:,1] - points[:,5]*points[:,3]/2.0).unsqueeze(1).repeat(1,4)
+        new_pts[:,[1,3,5,7],1] = (points[:,1] + points[:,5]*points[:,3]/2.0).unsqueeze(1).repeat(1,4)
+    
+        # assign z values
+        new_pts[:,4:8,2] = (points[:,4]).unsqueeze(1).repeat(1,4)
+    
+        return new_pts
+    
     
     def space_to_state(self,points):
         """
@@ -54,7 +235,8 @@ class Homographer():
         vps       -
         name      - str, preferably camera name e.g. p1c4
         """
-        
+        corr_pts = np.stack(corr_pts)
+        space_pts = np.stack(space_pts)
         cor = {}
         cor["vps"] = vps
         cor["corr_pts"] = corr_pts
@@ -91,18 +273,52 @@ class Homographer():
     
     
     # TODO - finish implementation!
-    def im_to_space(self,points,name = "default_correspondence"):
+    def im_to_space(self,points,mode = "input_height", name = "default_correspondence",heights = None):
         """
         Converts points by means of ____________
         
         points - [d,m,2] array of points in image
         """
-        return
+        d = points.shape[0]
+        
+        # convert points into size [dm,3]
+        points = points.reshape(-1,2).double()
+        points = torch.cat((points,torch.ones([points.shape[0],1]).double()),1) # add 3rd row
+        
+        if mode == "input_height":
+            H = torch.from_numpy(self.correspondence[name]["H"])
+            new_pts = torch.matmul(points,H)
+            
+            # divide each point 0th and 1st column by the 2nd column
+            new_pts[:,0] = new_pts[:,0] / new_pts[:,2]
+            new_pts[:,1] = new_pts[:,1] / new_pts[:,2]
+            
+            # drop scale factor column
+            new_pts = new_pts[:,:2] 
+            
+            # reshape to [d,m,2]
+            new_pts = new_pts.reshape(d,-1,2)
+            
+            # add third column for height
+            new_pts = torch.cat((new_pts,torch.ones([d,new_pts.shape[1],1]).double()),2)
+            
+            if heights is None:
+                print("heights was not input, but is required for 'input_height' mode")
+                return
+            
+            else:
+                new_pts[:,[4,5,6,7],2] = heights.unsqueeze(1).repeat(1,4).double()
+            
+        else:
+            print("This mode has not yet been implemented")
+        
+        return new_pts
+    
     
     def space_to_im(self,points,name = "default_correspondence"):
         """
         Projects 3D space points into image/correspondence using P:
-            points` = P x points T  ---> [dm,3] = [3,4] x [4,dm]
+            new_pts = P x points T  ---> [dm,3] T = [3,4] x [4,dm]
         performed by flattening batch dimension d and object point dimension m together
         
         points - [d,m,3] array of points in 3-space
@@ -111,25 +327,25 @@ class Homographer():
         
         # convert points into size [dm,4]
         points = points.reshape(-1,3)
-        points = torch.cat(points,torch.ones([points.shape[0],1]),1) # add 4th row
+        points = torch.cat((points,torch.ones([points.shape[0],1])),1) # add 4th row
         
         # transpose to [4,dm]
-        points = torch.transpose(points,0,1)
+        points = torch.transpose(points,0,1).double()
         
         # project into [3,dm], transpose to [dm,3]
-        P = self.correspondence[name]["P"]
-        points_new = torch.transpose( torch.multiply(P,points) ,0,1)
+        P = torch.from_numpy(self.correspondence[name]["P"]).double()
+        new_pts= torch.transpose( torch.matmul(P,points) ,0,1)
         
         # divide each point 0th and 1st column by the 2nd column
-        points_new[:,0] = points_new[:,0] / points_new[:,2]
-        points_new[:,1] = points_new[:,1] / points_new[:,2]
+        new_pts[:,0] = new_pts[:,0] / new_pts[:,2]
+        new_pts[:,1] = new_pts[:,1] / new_pts[:,2]
         
         # drop scale factor column
-        points_new = points_new[:,:2] 
+        new_pts = new_pts[:,:2] 
         
         # reshape to [d,m,2]
-        points_new = points_new.reshape(d,-1,2)
-        return points_new
+        new_pts = new_pts.reshape(d,-1,2)
+        return new_pts
     
     
     def state_to_im(self,points,name = "default_correspondence"):
@@ -138,13 +354,128 @@ class Homographer():
         
         points - [d,m,s] matrix of points in state formulation
         """
-        return self.space_to_im(self.state_to_space(points))
+        return self.space_to_im(self.state_to_space(points),name = name)
     
     
-    def im_to_state(self,points,name = "default_correspondence"):
+    def im_to_state(self,points,mode = "input_height",name = "default_correspondence", heights = None):
         """
         Calls im_to_space, then space_to_state
         
         points - [d,m,2] array of points in image
         """
-        return self.space_to_state(self.im_to_space(points))
+        return self.space_to_state(self.im_to_space(points,mode = mode,heights = heights,name = name))
+    
+    def guess_heights(self,classes):
+        """
+        classes - [d] vector of string class names
+        
+        returns - [d] vector of float object height guesses
+        """
+        
+        heights = torch.zeros(len(classes))
+        
+        for i in range(len(classes)):
+            try:
+                heights[i] = self.class_heights[classes[i]]
+            except KeyError:
+                heights[i] = self.class_heights["other"]
+            
+        return heights
+    
+    def test_transformation(self,points,classes,name = "default_correspondence", im = None):
+        """
+        Transform image -> space -> state -> space -> image and 
+        outputs the average reprojection error in pixels for top and bottom box coords
+        
+        points - [d,8,2] array of pixel coordinates corresponding to object corners
+                 fbr,fbl,bbr,bbl,ftr,ftl,fbr,fbl
+        name - str camera/correspondence name
+        im- if a cv2-style image is given, will plot original and reprojected boxes        
+        """
+        guess_heights = self.guess_heights(classes)
+        state_pts = self.im_to_state(points,mode = "input_height",heights = guess_heights,name = name)
+        im_pts_repro = self.state_to_im(state_pts,name = name)
+    
+        print("Done")
+        # calc error
+        
+        # if image, plot
+
+
+
+
+
+# basic test code
+if __name__ == "__main__":
+    
+    def load_i24_csv(file):
+        """
+        Simple no-frills function to load data as currently formatted on the i24 project
+        """
+        short_name = file.split("/")[-1]
+        HEADERS = True
+        
+        # parse first file
+        rows = []
+        with open(file,"r") as f:
+            read = csv.reader(f)
+            
+            for row in read:
+                rows.append(row)
+                    
+        data = {}
+        HEADERS = True
+        for row_idx in range(len(rows)):
+            row = rows[row_idx]
+            
+            # pass header lines through as-is
+            if HEADERS:
+                labels = row
+                if len(row) > 0 and row[0] == "Frame #":
+                    HEADERS = False
+            
+            
+            else:
+                
+                if len(row) == 0:
+                    continue
+                
+                frame_idx = int(row[0])
+                if frame_idx not in data.keys():
+                    data[frame_idx] = [row]
+                else:
+                    data[frame_idx].append(row)
+                
+        
+        return labels,data
+    
+    camera_name = "p1c2"
+    vp_path = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp/{}_axes.csv".format(camera_name)
+    point_path = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform/{}_im_lmcs_transform_points.csv".format(camera_name)
+    
+    data_file = "/home/worklab/Data/dataset_alpha/manual_correction/rectified_{}_0_track_outputs_3D.csv".format(camera_name)
+    labels,data = load_i24_csv(data_file)
+    frame_data = data[0]
+    
+    # convert labels from first frame into tensor form
+    boxes = []
+    classes = []
+    for item in frame_data:
+        if len(item[11]) > 0:
+            boxes.append(np.array(item[11:27]).astype(float))
+            classes.append(item[3])
+    boxes = torch.from_numpy(np.stack(boxes))
+    boxes = torch.stack((boxes[:,::2],boxes[:,1::2]),dim = -1)
+    
+    # load first frame from sequence
+    sequence = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/{}_0.mp4".format(camera_name)
+    cap = cv2.VideoCapture(sequence)
+    _,frame = cap.read()
+    
+    
+    hg = Homographer()
+    hg.add_i24_camera(point_path,vp_path,camera_name)
+    
+    hg.test_transformation(boxes,classes,camera_name,frame)
+    
+    
