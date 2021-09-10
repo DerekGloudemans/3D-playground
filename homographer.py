@@ -46,7 +46,7 @@ class Homographer():
         """
         return self.f2(points)
     
-    # TODO - finish implementation of finding P
+
     def add_correspondence(self,corr_pts,space_pts,vps,name = "default_correspondence"):
         """
         corr_pts  - 
@@ -63,7 +63,21 @@ class Homographer():
         cor["H"],_     = cv2.findHomography(corr_pts,space_pts)
         cor["H_inv"],_ = cv2.findHomography(space_pts,corr_pts)
         
-        cor["P"] = None
+        
+        # P is a [3,4] matrix 
+        #  column 0 - vanishing point for space x-axis (axis 0) in image coordinates (im_x,im_y,im_scale_factor)
+        #  column 1 - vanishing point for space y-axis (axis 1) in image coordinates (im_x,im_y,im_scale_factor)
+        #  column 2 - vanishing point for space z-axis (axis 2) in image coordinates (im_x,im_y,im_scale_factor)
+        #  column 3 - space origin in image coordinates (im_x,im_y,scale_factor)
+        #  columns 0,1 and 3 are identical to the columns of H, 
+        #  We simply insert the z-axis column (im_x,im_y,1) as the new column 2
+        
+        P = np.zeros([3,4])
+        P[:,0] = cor["H"][:,0]
+        P[:,1] = cor["H"][:,1]
+        P[:,3] = cor["H"][:,2]
+        P[:,2] = np.array([vps[2][0],vps[2][1],1])
+        cor["P"] = P
         
         self.correspondence[name] = cor
     
