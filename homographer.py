@@ -99,14 +99,37 @@ class Homographer():
         """
         return
     
-    # TODO - finish implementation!
     def space_to_im(self,points,name = "default_correspondence"):
         """
-        Projects 3D space points into image/correspondence using P
+        Projects 3D space points into image/correspondence using P:
+            points` = P x points T  ---> [dm,3] = [3,4] x [4,dm]
+        performed by flattening batch dimension d and object point dimension m together
         
         points - [d,m,3] array of points in 3-space
         """
-        return
+        d = points.shape[0]
+        
+        # convert points into size [dm,4]
+        points = points.reshape(-1,3)
+        points = torch.cat(points,torch.ones([points.shape[0],1]),1) # add 4th row
+        
+        # transpose to [4,dm]
+        points = torch.transpose(points,0,1)
+        
+        # project into [3,dm], transpose to [dm,3]
+        P = self.correspondence[name]["P"]
+        points_new = torch.transpose( torch.multiply(P,points) ,0,1)
+        
+        # divide each point 0th and 1st column by the 2nd column
+        points_new[:,0] = points_new[:,0] / points_new[:,2]
+        points_new[:,1] = points_new[:,1] / points_new[:,2]
+        
+        # drop scale factor column
+        points_new = points_new[:,:2] 
+        
+        # reshape to [d,m,2]
+        points_new = points_new.reshape(d,-1,2)
+        return points_new
     
     
     def state_to_im(self,points,name = "default_correspondence"):
