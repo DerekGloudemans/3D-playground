@@ -473,13 +473,13 @@ class Homography():
                     
             
             # define new upper, lower  with width 2*step_size centered on best value
-            print("On loop {}: best C so far: {} avg error {}".format(iteration,best_C,best_error))
+            #print("On loop {}: best C so far: {} avg error {}".format(iteration,best_C,best_error))
             lower_bound = best_C - step_size
             upper_bound = best_C + step_size
             C_grid = np.linspace(lower_bound,upper_bound,num = 10)
             step_size = C_grid[1] - C_grid[0]
 
-            print("New C_grid: {}".format(C_grid.round(4)))
+            #print("New C_grid: {}".format(C_grid.round(4)))
             iteration += 1
         
         

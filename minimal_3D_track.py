@@ -12,7 +12,10 @@ import matplotlib.pyplot  as plt
 from scipy.optimize import linear_sum_assignment
 import _pickle as pickle
 
-
+# add relevant packages and directories to path
+detector_path = os.path.join(os.getcwd(),"pytorch_retinanet_detector_directional")
+sys.path.insert(0,detector_path)
+from pytorch_retinanet_detector_directional.retinanet.model import resnet50 
 
 # filter and frame loader
 from util_track.mp_loader import FrameLoader
@@ -22,7 +25,7 @@ from util_track.mp_writer import OutputWriter
 from homography import Homography, load_i24_csv
 
 
-class Localization_Tracker():
+class KIOU_Tracker():
     
     def __init__(self,
                  sequence,
@@ -591,10 +594,33 @@ if __name__ == "__main__":
     vp_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp/{}_axes.csv".format(camera_name)
     point_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform/{}_im_lmcs_transform_points.csv".format(camera_name)
     sequence = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/{}_{}.mp4".format(camera_name,s_idx)
-
-
+    
     det_cp = "/home/worklab/Documents/derek/3D-playground/cpu_15000gt_3D.pt"
-    kf_params = "util_track/kf_params_6D.cpkl"
+    kf_param_path = None #"util_track/kf_params_6D.cpkl"
+    
+    
+    use_cuda = torch.cuda.is_available()
+    device = torch.device("cuda:0" if use_cuda else "cpu")
+    
+    
+    classes = { "sedan":0,
+                    "midsize":1,
+                    "van":2,
+                    "pickup":3,
+                    "semi":4,
+                    "truck (other)":5,
+                    "truck": 5,
+                    "motorcycle":6,
+                    "trailer":7,
+                    0:"sedan",
+                    1:"midsize",
+                    2:"van",
+                    3:"pickup",
+                    4:"semi",
+                    5:"truck (other)",
+                    6:"motorcycle",
+                    7:"trailer",
+                    }
     
     #%% Load necessary files
 
@@ -612,17 +638,64 @@ if __name__ == "__main__":
     boxes = torch.from_numpy(np.stack(boxes))
     boxes = torch.stack((boxes[:,::2],boxes[:,1::2]),dim = -1)
     
+    #%% Set up filter, detector, etc.
+    
     # load homography
     hg = Homography()
-    hg.add_i24_camera(point_pfile,vp_file,camera_name)
-    
-    # fit P and evaluate
+    hg.add_i24_camera(point_file,vp_file,camera_name)
     heights = hg.guess_heights(classes)
     hg.scale_Z(boxes,heights,name = camera_name)
     
     
-    #%% Set up filter, detector, etc.
+    # load detector
+    detector = resnet50(8)
+    detector.load_state_dict(torch.load(det_cp))
+    detector = detector.to(device)
+    
+    # set up filter params
+    
+    if kf_param_path is not None:
+        with open(kf_param_path ,"rb") as f:
+            kf_params = pickle.load(f)
+                     
+    
+    else: # set up kf - we assume measurements will simply be given in state formulation x,y,l,w,h,x_dot
+        kf = Torch_KF(torch.device("cpu"))
+        kf.F = torch.eye(6)
+        kf.F[0,5] = 1
+        
+        kf.H = torch.tensor([
+            [1,0,0,0,0,0],
+            [0,1,0,0,0,0],
+            [0,0,1,0,0,0],
+            [0,0,0,1,0,0],
+            [0,0,0,0,1,0]
+            ])
+    
+        kf.P = torch.tensor([
+            [30,0,0,0,0,0,0],
+            [0,10,0,0,0,0,0],
+            [0,0,15,0,0,0,0],
+            [0,0,0,10,0,0,0],
+            [0,0,0,0,10,0,0],
+            [0,0,0,0,0,0,20]
+            ])
+    
+        kf.Q = torch.eye(6)
+        kf.R = torch.eye(5) * 5
+        kf.mu_R = torch.zeros(5)
+        kf.mu_Q = torch.zeros(6)
+        kf_params = {
+            "mu_Q":kf.mu_Q,
+            "mu_R":kf.mu_R,
+            "F":kf.F,
+            "H":kf.H,
+            "P":kf.P,
+            "Q":kf.Q,
+            "R":kf.R
+            }
+        
     
     #%% Run tracker
-    
+    tracker = KIOU_Tracker(sequence,detector,kf_params,hg,classes)
     

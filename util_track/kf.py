@@ -73,10 +73,10 @@ class Torch_KF(object):
             self.Q  = INIT["Q"].unsqueeze(0)
             self.R  = INIT["R"].unsqueeze(0) 
             #self.R[0,2,2] *= 100 # increase uncertainty in localizer scale
-            self.R2  = INIT["R2"].unsqueeze(0)  
+            #self.R2  = INIT["R2"].unsqueeze(0)  
             self.mu_Q = INIT["mu_Q"].unsqueeze(0) 
             self.mu_R = INIT["mu_R"].unsqueeze(0)
-            self.mu_R2 = INIT["mu_R2"].unsqueeze(0)
+            #self.mu_R2 = INIT["mu_R2"].unsqueeze(0)
 
             self.state_size = self.F.shape[0]
             self.meas_size  =  self.H.shape[0]
@@ -86,7 +86,7 @@ class Torch_KF(object):
                 self.mu_Q  = torch.zeros([1,self.state_size])
             if not ADD_MEAN_R:
                 self.mu_R  = torch.zeros([1,self.meas_size])
-                self.mu_R2 = torch.zeros([1,self.meas_size])
+                #self.mu_R2 = torch.zeros([1,self.meas_size])
 
        
         # move to device
@@ -94,11 +94,11 @@ class Torch_KF(object):
         self.H = self.H.to(device).float()
         self.Q = self.Q.to(device).float()
         self.R = self.R.to(device).float()
-        self.R2 = self.R.to(device).float()
+        #self.R2 = self.R.to(device).float()
         self.P0 = self.P0.to(device).float() 
         self.mu_Q = self.mu_Q.to(device).float()
         self.mu_R = self.mu_R.to(device).float()
-        self.mu_R2 = self.mu_R.to(device).float()
+        #self.mu_R2 = self.mu_R.to(device).float()
         
     def add(self,detections,obj_ids):
         """
