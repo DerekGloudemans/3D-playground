@@ -259,7 +259,7 @@ if __name__ == "__main__":
     patience = 4
     max_epochs = 100
     start_epoch = 11
-    checkpoint_file =  "corrected_data_e10.pt" #"directional_v3_e15.pt"
+    checkpoint_file =  "corrected_data_e23.pt" #"directional_v3_e15.pt"
     MULTI_GPU = True
     batch_size = 12 if MULTI_GPU else 2
     plot_every = 5
@@ -338,6 +338,9 @@ if __name__ == "__main__":
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=patience, verbose=True, mode = "min")
     loss_hist = collections.deque(maxlen=500)
     most_recent_mAP = 0
+
+    # to_cpu(checkpoint_file)
+    # raise Exception
 
     print('Num training images: {}'.format(len(train_data)))
 

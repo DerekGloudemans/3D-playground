@@ -83,7 +83,7 @@ def find_vanishing_point(lines):
             
     return [px,py]
 
-class Homographer():
+class Homography():
     """
     Homographer provides utiliites for converting between image,space, and state coordinates
     One homographer object corresponds to a single space/state formulation but
@@ -187,10 +187,10 @@ class Homographer():
         new_pts[:,2] = torch.abs ( ((points[:,0,0] + points[:,1,0]) - (points[:,2,0] + points[:,3,0]))/2.0 )
         
         # w is computed as avg length between botom left and bottom right
-        new_pts[:,3] = torch.abs(  ((points[:,0,1] + points[:,2,0]) - (points[:,1,0] + points[:,3,0]))/2.0)
+        new_pts[:,3] = torch.abs(  ((points[:,0,1] + points[:,2,1]) - (points[:,1,1] + points[:,3,1]))/2.0)
 
         # h is computed as avg length between all top and all bottom points
-        new_pts[:,4] = torch.mean(torch.abs( (points[:,0:4,2] - points[:,4:8,2])))
+        new_pts[:,4] = torch.mean(torch.abs( (points[:,0:4,2] - points[:,4:8,2])),dim = 1)
         
         # direction is +1 if vehicle is traveling along direction of increasing x, otherwise -1
         new_pts[:,5] = torch.sign( ((points[:,0,0] + points[:,1,0]) - (points[:,2,0] + points[:,3,0]))/2.0 ) 
@@ -202,7 +202,7 @@ class Homographer():
         new_pts = torch.zeros([d,8,3])
         
         # assign x values
-        new_pts[:,[0,1,4,5],0] = (points[:,0] + points[:,2]).unsqueeze(1).repeat(1,4)
+        new_pts[:,[0,1,4,5],0] = (points[:,0] + points[:,5]*points[:,2]).unsqueeze(1).repeat(1,4)
         new_pts[:,[2,3,6,7],0] = (points[:,0]).unsqueeze(1).repeat(1,4)
         
         # assign y values
@@ -210,7 +210,7 @@ class Homographer():
         new_pts[:,[1,3,5,7],1] = (points[:,1] + points[:,5]*points[:,3]/2.0).unsqueeze(1).repeat(1,4)
     
         # assign z values
-        new_pts[:,4:8,2] = (points[:,4]).unsqueeze(1).repeat(1,4)
+        new_pts[:,4:8,2] = -(points[:,4]).unsqueeze(1).repeat(1,4) 
     
         return new_pts
     
@@ -255,10 +255,10 @@ class Homographer():
         #  We simply insert the z-axis column (im_x,im_y,1) as the new column 2
         
         P = np.zeros([3,4])
-        P[:,0] = cor["H"][:,0]
-        P[:,1] = cor["H"][:,1]
-        P[:,3] = cor["H"][:,2]
-        P[:,2] = np.array([vps[2][0],vps[2][1],1])
+        P[:,0] = cor["H_inv"][:,0]
+        P[:,1] = cor["H_inv"][:,1]
+        P[:,3] = cor["H_inv"][:,2]
+        P[:,2] = np.array([vps[2][0],vps[2][1],1]) * 0.01
         cor["P"] = P
         
         self.correspondence[name] = cor
@@ -273,7 +273,7 @@ class Homographer():
     
     
     # TODO - finish implementation!
-    def im_to_space(self,points,mode = "input_height", name = "default_correspondence",heights = None):
+    def im_to_space(self,points, name = "default_correspondence",heights = None):
         """
         Converts points by means of ____________
         
@@ -285,8 +285,8 @@ class Homographer():
         points = points.reshape(-1,2).double()
         points = torch.cat((points,torch.ones([points.shape[0],1]).double()),1) # add 3rd row
         
-        if mode == "input_height":
-            H = torch.from_numpy(self.correspondence[name]["H"])
+        if heights is not None:
+            H = torch.from_numpy(self.correspondence[name]["H"]).transpose(0,1)
             new_pts = torch.matmul(points,H)
             
             # divide each point 0th and 1st column by the 2nd column
@@ -300,17 +300,13 @@ class Homographer():
             new_pts = new_pts.reshape(d,-1,2)
             
             # add third column for height
-            new_pts = torch.cat((new_pts,torch.ones([d,new_pts.shape[1],1]).double()),2)
+            new_pts = torch.cat((new_pts,torch.zeros([d,new_pts.shape[1],1]).double()),2)
             
-            if heights is None:
-                print("heights was not input, but is required for 'input_height' mode")
-                return
-            
-            else:
-                new_pts[:,[4,5,6,7],2] = heights.unsqueeze(1).repeat(1,4).double()
+            new_pts[:,[4,5,6,7],2] = heights.unsqueeze(1).repeat(1,4).double()
             
         else:
-            print("This mode has not yet been implemented")
+            print("No heights were input")
+            return
         
         return new_pts
     
@@ -327,14 +323,14 @@ class Homographer():
         
         # convert points into size [dm,4]
         points = points.reshape(-1,3)
-        points = torch.cat((points,torch.ones([points.shape[0],1])),1) # add 4th row
+        points = torch.cat((points,torch.ones([points.shape[0],1])),1).double() # add 4th row
         
-        # transpose to [4,dm]
+        # [dm,3]
         points = torch.transpose(points,0,1).double()
         
-        # project into [3,dm], transpose to [dm,3]
+        # project into [dm,3]
         P = torch.from_numpy(self.correspondence[name]["P"]).double()
-        new_pts= torch.transpose( torch.matmul(P,points) ,0,1)
+        new_pts=  torch.matmul(P,points).transpose(0,1)
         
         # divide each point 0th and 1st column by the 2nd column
         new_pts[:,0] = new_pts[:,0] / new_pts[:,2]
@@ -357,13 +353,13 @@ class Homographer():
         return self.space_to_im(self.state_to_space(points),name = name)
     
     
-    def im_to_state(self,points,mode = "input_height",name = "default_correspondence", heights = None):
+    def im_to_state(self,points,name = "default_correspondence", heights = None):
         """
         Calls im_to_space, then space_to_state
         
         points - [d,m,2] array of points in image
         """
-        return self.space_to_state(self.im_to_space(points,mode = mode,heights = heights,name = name))
+        return self.space_to_state(self.im_to_space(points,heights = heights,name = name))
     
     def guess_heights(self,classes):
         """
@@ -382,7 +378,7 @@ class Homographer():
             
         return heights
     
-    def test_transformation(self,points,classes,name = "default_correspondence", im = None):
+    def test_transformation(self,points,classes = None,name = "default_correspondence", im = None,heights = None, verbose = True):
         """
         Transform image -> space -> state -> space -> image and 
         outputs the average reprojection error in pixels for top and bottom box coords
@@ -391,24 +387,148 @@ class Homographer():
                  fbr,fbl,bbr,bbl,ftr,ftl,fbr,fbl
         name - str camera/correspondence name
         im- if a cv2-style image is given, will plot original and reprojected boxes        
+        heights - [d] array of object heights, otherwise heights will be guessed
+                  based on class
         """
-        guess_heights = self.guess_heights(classes)
-        state_pts = self.im_to_state(points,mode = "input_height",heights = guess_heights,name = name)
+        if heights is None:
+            if classes is None:
+                print("Must either specify heights or classes for boxes")
+                return
+            else:
+                guess_heights = self.guess_heights(classes)
+        else:
+            guess_heights = heights
+            
+        state_pts = self.im_to_state(points,heights = guess_heights,name = name)
         im_pts_repro = self.state_to_im(state_pts,name = name)
     
-        print("Done")
         # calc error
+        error = torch.abs(points - im_pts_repro)        
+        bottom_error = torch.sqrt(torch.pow(error[:,:4,0],2) + torch.pow(error[:,:4,1],2)).mean()
+        top_error = torch.sqrt(torch.pow(error[:,4:8,0],2) + torch.pow(error[:,4:8,1],2)).mean()
+        
+        if verbose:
+            print("Average distance between reprojected points and original points:")
+            print("-----------------------------")
+            print("Top: {} pixels".format(top_error))
+            print("Bottom: {} pixels".format(bottom_error))
         
         # if image, plot
+        if im is not None:
+            im = self.plot_boxes(im,points,color = (0,255,0))
+            im = self.plot_boxes(im,im_pts_repro,color = (0,0,255))
+        
+            cv2.imshow("frame",im)
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+        
+        return top_error + bottom_error
+        
+        
+    def scale_Z(self,boxes,heights,name = "default_correspondence", granularity = 1e-06, max_scale = 10):
+        """
+        When a new correspondence is added, the 3rd column of P is off by a scale factor
+        relative to the other columns. This function scales P optimally
+        to minimize the reprojection errror of the given boxes with the given heights
+        
+        boxes - [d,8,2] array of image points corresponding to object bounding boxes
+                d indexes objects
+        heights - [d] array of object heights (in space coordinates e.g. feet)
+        name - str - correspondence 
+        granularity - float - controls the minimum step size for grid search 
+        max_scale - float - roughly, a reasonable upper estimate for the space-unit change
+                corresponding to one pixel in the Z direction
+                
+        returns - None (but alters P in self.correspondence)
+        """
+        P_orig = self.correspondence[name]["P"].copy()
+        
+        upper_bound = max_scale
+        lower_bound = granularity
+        
+        # create a grid of 10 evenly spaced entries between upper and lower bound
+        C_grid = np.linspace(lower_bound,upper_bound,num = 10)
+        step_size = C_grid[1] - C_grid[0]
+        iteration = 1
+        
+        while step_size > granularity:
+            
+            best_error = np.inf
+            best_C = None
+            # for each value of P, get average reprojection error
+            for C in C_grid:
+                
+                # scale P
+                P = P_orig.copy()
+                P[:,2] *= C
+                self.correspondence[name]["P"] = P
+                
+                # test error
+                error = self.test_transformation(boxes,name = name, heights = heights,verbose = False)
+                
+                # if this is the best so far, store it
+                if error < best_error:
+                    best_error = error
+                    best_C = C
+                    
+            
+            # define new upper, lower  with width 2*step_size centered on best value
+            print("On loop {}: best C so far: {} avg error {}".format(iteration,best_C,best_error))
+            lower_bound = best_C - step_size
+            upper_bound = best_C + step_size
+            C_grid = np.linspace(lower_bound,upper_bound,num = 10)
+            step_size = C_grid[1] - C_grid[0]
 
+            print("New C_grid: {}".format(C_grid.round(4)))
+            iteration += 1
+        
+        
 
+    def plot_boxes(self,im,boxes,color = (255,255,255),labels = None):
+        """
+        As one might expect, plots 3D boxes on input image
+        
+        im - cv2 matrix-style image
+        boxes - [d,8,2] array of image points where d indexes objects
+        color - 3-tuple specifying box color to plot
+        """
+        
+        thickness = 2
+        
+        DRAW = [[0,1,1,0,1,0,0,0], #bfl
+                [0,0,0,1,0,1,0,0], #bfr
+                [0,0,0,1,0,0,1,1], #bbl
+                [0,0,0,0,0,0,1,1], #bbr
+                [0,0,0,0,0,1,1,0], #tfl
+                [0,0,0,0,0,0,0,1], #tfr
+                [0,0,0,0,0,0,0,1], #tbl
+                [0,0,0,0,0,0,0,0]] #tbr
+        
+        DRAW_BASE = [[0,1,1,1], #bfl
+                     [0,0,1,1], #bfr
+                     [0,0,0,1], #bbl
+                     [0,0,0,0]] #bbr
+        
+        for idx, bbox_3d in enumerate(boxes):
+                
+            for a in range(len(bbox_3d)):
+                ab = bbox_3d[a]
+                for b in range(a,len(bbox_3d)):
+                    bb = bbox_3d[b]
+                    if DRAW[a][b] == 1:
+                        im = cv2.line(im,(int(ab[0]),int(ab[1])),(int(bb[0]),int(bb[1])),color,thickness)
+        
+            if labels is not None:
+                label = labels[idx]
+                left  = bbox_3d[0,0]
+                top   = bbox_3d[0,1]
+                im    = cv2.putText(im,"{}".format(label),(int(left),int(top - 10)),cv2.FONT_HERSHEY_PLAIN,1,(0,0,0),3)
+                im    = cv2.putText(im,"{}".format(label),(int(left),int(top - 10)),cv2.FONT_HERSHEY_PLAIN,1,(255,255,255),1)
+            
+        return im
+        
 
-
-
-# basic test code
-if __name__ == "__main__":
-    
-    def load_i24_csv(file):
+def load_i24_csv(file):
         """
         Simple no-frills function to load data as currently formatted on the i24 project
         """
@@ -448,15 +568,20 @@ if __name__ == "__main__":
                 
         
         return labels,data
+
+# basic test code
+if __name__ == "__main__":
     
-    camera_name = "p1c2"
+    camera_name = "p2c3"
+    
     vp_path = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp/{}_axes.csv".format(camera_name)
     point_path = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform/{}_im_lmcs_transform_points.csv".format(camera_name)
     
+    
+    # get some data
     data_file = "/home/worklab/Data/dataset_alpha/manual_correction/rectified_{}_0_track_outputs_3D.csv".format(camera_name)
     labels,data = load_i24_csv(data_file)
     frame_data = data[0]
-    
     # convert labels from first frame into tensor form
     boxes = []
     classes = []
@@ -467,15 +592,19 @@ if __name__ == "__main__":
     boxes = torch.from_numpy(np.stack(boxes))
     boxes = torch.stack((boxes[:,::2],boxes[:,1::2]),dim = -1)
     
-    # load first frame from sequence
+    # get first frame from sequence
     sequence = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/{}_0.mp4".format(camera_name)
     cap = cv2.VideoCapture(sequence)
     _,frame = cap.read()
     
     
-    hg = Homographer()
+    # test homography
+    hg = Homography()
     hg.add_i24_camera(point_path,vp_path,camera_name)
     
+    # fit P and evaluate
+    heights = hg.guess_heights(classes)
+    hg.scale_Z(boxes,heights,name = camera_name)
     hg.test_transformation(boxes,classes,camera_name,frame)
     
     
