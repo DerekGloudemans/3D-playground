@@ -130,6 +130,8 @@ class Homography():
                 "trailer":3,
                 "other":5
             }
+        
+        self.default_correspondence = None
     
     def add_i24_camera(self,point_path,vp_path,camera_name):
         # load points
@@ -228,13 +230,17 @@ class Homography():
         return self.f2(points)
     
 
-    def add_correspondence(self,corr_pts,space_pts,vps,name = "default_correspondence"):
+    def add_correspondence(self,corr_pts,space_pts,vps,name = None):
         """
         corr_pts  - 
         space_pts - 
         vps       -
         name      - str, preferably camera name e.g. p1c4
         """
+        
+        if name is None:
+            name = self.default_correspondence
+            
         corr_pts = np.stack(corr_pts)
         space_pts = np.stack(space_pts)
         cor = {}
@@ -262,6 +268,10 @@ class Homography():
         cor["P"] = P
         
         self.correspondence[name] = cor
+        
+        if self.default_correspondence is None:
+            self.default_correspondence = name
+            
     
     
     def remove_correspondence(self,name):        
@@ -273,12 +283,16 @@ class Homography():
     
     
     # TODO - finish implementation!
-    def im_to_space(self,points, name = "default_correspondence",heights = None):
+    def im_to_space(self,points, name = None,heights = None):
         """
         Converts points by means of ____________
         
         points - [d,m,2] array of points in image
         """
+        if name is None:
+            name = self.default_correspondence
+        
+        
         d = points.shape[0]
         
         # convert points into size [dm,3]
@@ -311,7 +325,7 @@ class Homography():
         return new_pts
     
     
-    def space_to_im(self,points,name = "default_correspondence"):
+    def space_to_im(self,points,name = None):
         """
         Projects 3D space points into image/correspondence using P:
             new_pts = P x points T  ---> [dm,3] T = [3,4] x [4,dm]
@@ -319,6 +333,9 @@ class Homography():
         
         points - [d,m,3] array of points in 3-space
         """
+        if name is None:
+            name = self.default_correspondence
+        
         d = points.shape[0]
         
         # convert points into size [dm,4]
@@ -344,21 +361,27 @@ class Homography():
         return new_pts
     
     
-    def state_to_im(self,points,name = "default_correspondence"):
+    def state_to_im(self,points,name = None):
         """
         Calls state_to_space, then space_to_im
         
         points - [d,m,s] matrix of points in state formulation
         """
+        if name is None:
+            name = self.default_correspondence
+        
         return self.space_to_im(self.state_to_space(points),name = name)
     
     
-    def im_to_state(self,points,name = "default_correspondence", heights = None):
+    def im_to_state(self,points,name = None, heights = None):
         """
         Calls im_to_space, then space_to_state
         
         points - [d,m,2] array of points in image
         """
+        if name is None:
+            name = self.default_correspondence
+        
         return self.space_to_state(self.im_to_space(points,heights = heights,name = name))
     
     def guess_heights(self,classes):
@@ -378,7 +401,7 @@ class Homography():
             
         return heights
     
-    def test_transformation(self,points,classes = None,name = "default_correspondence", im = None,heights = None, verbose = True):
+    def test_transformation(self,points,classes = None,name = None, im = None,heights = None, verbose = True):
         """
         Transform image -> space -> state -> space -> image and 
         outputs the average reprojection error in pixels for top and bottom box coords
@@ -390,6 +413,10 @@ class Homography():
         heights - [d] array of object heights, otherwise heights will be guessed
                   based on class
         """
+        if name is None:
+            name = self.default_correspondence
+        
+        
         if heights is None:
             if classes is None:
                 print("Must either specify heights or classes for boxes")
@@ -425,7 +452,7 @@ class Homography():
         return top_error + bottom_error
         
         
-    def scale_Z(self,boxes,heights,name = "default_correspondence", granularity = 1e-06, max_scale = 10):
+    def scale_Z(self,boxes,heights,name = None, granularity = 1e-06, max_scale = 10):
         """
         When a new correspondence is added, the 3rd column of P is off by a scale factor
         relative to the other columns. This function scales P optimally
@@ -441,6 +468,9 @@ class Homography():
                 
         returns - None (but alters P in self.correspondence)
         """
+        if name is None:
+            name = self.default_correspondence
+        
         P_orig = self.correspondence[name]["P"].copy()
         
         upper_bound = max_scale

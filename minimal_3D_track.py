@@ -7,7 +7,7 @@ import cv2
 from PIL import Image
 import torch
 from torchvision.transforms import functional as F
-from torchvision.ops import roi_align
+from torchvision.ops import roi_align, nms
 import matplotlib.pyplot  as plt
 from scipy.optimize import linear_sum_assignment
 import _pickle as pickle
@@ -36,7 +36,7 @@ class KIOU_Tracker():
                  fsld_max = 1,
                  matching_cutoff = 0.3,
                  iou_cutoff = 0.5,
-                 det_conf_cutoff = 0.5,
+                 det_conf_cutoff = 0.2,
                  PLOT = True,
                  OUT = None,
                  downsample = 1,
@@ -86,6 +86,8 @@ class KIOU_Tracker():
         self.filter = Torch_KF(torch.device("cpu"),INIT = kf_params)
        
         self.loader = FrameLoader(sequence,self.device,1,1,downsample = downsample)
+        
+        self.hg = homography
         
         # create output image writer
         if OUT is not None:
@@ -350,22 +352,21 @@ class KIOU_Tracker():
             self.writer(im)
 
     # TODO - rewrite for 3D 
-    def parse_detections(self,scores,labels,boxes,n_best = 200):
+    def parse_detections(self,scores,labels,boxes,n_best = 200,perform_nms = True):
         """
-        Description
-        -----------
-        Removes any duplicates from raw YOLO detections and converts from 8-D Yolo
-        outputs to 6-d form needed for tracking
+        Removes low confidence detection, converts detections to state space, and
+        optionally performs non-maximal-supression
+        scores - [d] array with confidence values in range [0,1]
+        labels - [d] array with integer class predictions for detections
+        detections - [d,20] array with 16 3D box coordinates and 4 2D box coordinates
+        n_best - (int) if detector confidence cutoff is too low to sufficiently separate
+                 good from bad detections, the n_best highest confidence detections are kept
+        perform_nms - (bool) if True, NMS is performed
         
-        input form --> batch_idx, xmin,ymin,xmax,ymax,objectness,max_class_conf, class_idx 
-        output form --> x_center,y_center, scale, ratio, class_idx, max_class_conf
-        
-        Parameters
-        ----------
-        detections - tensor [n,8]
-            raw YOLO-format object detections
-        keep - list of int
-            class indices to keep, default are vehicle class indexes (car, truck, motorcycle, bus)
+        returns - detections - [d_new,6] array with x,y,l,w,h,direction for each detection kept
+                  labels - [d_new] array with kept classes
+                  
+                 
         """
         if len(scores) == 0:
             return []
@@ -387,20 +388,51 @@ class KIOU_Tracker():
             scores = scores[keepers]
         
         
-        # input form --> batch_idx, xmin,ymin,xmax,ymax,objectness,max_class_conf, class_idx 
-        # output form --> x_center,y_center, scale, ratio, class_idx, max_class_conf
+        # Homography object expects boxes in the form [d,8,2] - reshape detections
+        detections = detections.reshape(-1,10,2)
+        detections = detections[:,:8,:] # drop 2D boxes
         
-        output = torch.zeros(detections.shape[0],6)
-        output[:,0] = detections[:,0] 
-        output[:,1] = detections[:,1] 
-        output[:,2] = detections[:,2]
-        output[:,3] = detections[:,3]
-        output[:,4] =  labels
-        output[:,5] =  scores
+        # TODO - add in height information
+        heights = self.hg.guess_heights(labels)
+        detections = self.hg.im_to_state(detections,heights = heights)
         
+        if perform_nms:
+            idxs = self.state_nms(detections,scores)
+            labels = labels[idxs]
+            detections = detections[idxs]
+            scores = scores[idxs]
         
-        return output
+        return detections, labels
 
+    def state_nms(self,detections,scores,threshold = 0.5):
+        """
+        Performs non-maximal supression on boxes given in state formulation
+        detections - [d,6] array of boxes in state formulation
+        scores - [d] array of box scores in range [0,1]
+        threshold - float in range [0,1], boxes with IOU overlap > threshold are pruned
+        returns - idxs - indexes of boxes to keep
+        """
+        
+        # convert into xmin ymin xmax ymax form
+        
+        boxes_new = torch.zeros([detections.shape[0],4])
+        boxes_new[:,0] = detections[:,0]
+        boxes_new[:,2] = detections[:,0] + detections[:,5] * detections[:,2]
+        boxes_new[:,1] = detections[:,1] - detections[:,5] * detections[:,3]
+        boxes_new[:,3] = detections[:,1] + detections[:,5] * detections[:,3]
+        
+        # flip xmin and ymin as necessary
+        flip = torch.where(detections[:,5] == -1)[0]
+        
+        boxes = torch.clone(boxes_new)
+        boxes[flip,0] = boxes_new[flip,2]
+        boxes[flip,2] = boxes_new[flip,0]
+        boxes[flip,1] = boxes_new[flip,3]
+        boxes[flip,3] = boxes_new[flip,1]
+        
+        idxs = nms(boxes,scores,threshold)
+        return idxs
+        
     # Rewrite again for 3D
     def match_hungarian(self,first,second,dist_threshold = 50):
         """
@@ -509,32 +541,32 @@ class KIOU_Tracker():
             if True:  
                 
                 # detection step
-                try: # use CNN detector
-                    start = time.time()
-                    with torch.no_grad():                       
-                        scores,labels,boxes = self.detector(frame.unsqueeze(0))            
-                        torch.cuda.synchronize(self.device)
-                    self.time_metrics['detect'] += time.time() - start
-                    
-                    # move detections to CPU
-                    start = time.time()
-                    scores = scores.cpu()
-                    labels = labels.cpu()
-                    boxes = boxes.cpu()
-                    boxes = boxes * self.downsample
-                    self.time_metrics['load'] += time.time() - start
-                
-                except: # use mock detector
-                    scores,labels,boxes,time_taken = self.detector(self.track_id,frame_num)
-                    self.time_metrics["detect"] += time_taken
-                   
-               
-    
-                # postprocess detections
                 start = time.time()
-                detections = self.parse_detections(scores,labels,boxes)
+                with torch.no_grad():                       
+                    scores,labels,boxes = self.detector(frame.unsqueeze(0))            
+                    torch.cuda.synchronize(self.device)
+                self.time_metrics['detect'] += time.time() - start
+                
+                # move detections to CPU
+                start = time.time()
+                scores = scores.cpu()
+                labels = labels.cpu()
+                boxes = boxes.cpu()
+                boxes = boxes * self.downsample
+                self.time_metrics['load'] += time.time() - start
+                   
+                # postprocess detections - after this step, remaining detections are in state space
+                start = time.time()
+                detections,labels = self.parse_detections(scores,labels,boxes)
                 self.time_metrics['parse'] += time.time() - start
              
+                
+                # temp check via plotting
+                original_im = self.hg.plot_boxes(original_im,self.hg.state_to_im(detections))
+                cv2.imshow("frame",original_im)
+                cv2.waitKey(0)
+                cv2.destroyAllWindows()
+                
                 # match using Hungarian Algorithm        
                 start = time.time()
                 # matchings[i] = [a,b] where a is index of pre_loc and b is index of detection
@@ -698,4 +730,5 @@ if __name__ == "__main__":
     
     #%% Run tracker
     tracker = KIOU_Tracker(sequence,detector,kf_params,hg,classes)
+    tracker.track()
     
