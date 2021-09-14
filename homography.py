@@ -523,7 +523,7 @@ class Homography():
         color - 3-tuple specifying box color to plot
         """
         
-        thickness = 2
+        thickness = 1
         
         DRAW = [[0,1,1,0,1,0,0,0], #bfl
                 [0,0,0,1,0,1,0,0], #bfr

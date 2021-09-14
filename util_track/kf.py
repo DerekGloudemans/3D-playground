@@ -262,7 +262,7 @@ class Torch_KF(object):
         self.X[relevant,:] = X_up
         self.P[relevant,:,:] = P_up
     
-    def objs(self):
+    def objs(self,with_direction = False):
         """
         Returns
         -------
@@ -276,6 +276,24 @@ class Torch_KF(object):
             if idx is not None:
                 out_dict[id] = self.X[idx,:].data.cpu().numpy()
         return out_dict        
+
+    def objs2(self,with_direction = False):
+        """
+        Returns
+        -------
+        out_dict - dictionary
+            Current state of each object indexed by obj_id (int)
+        """
+        
+        out_dict = {}
+        for id in self.obj_idxs:
+            idx = self.obj_idxs[id]
+            if idx is not None:
+                if with_direction:
+                    out_dict[id] = torch.cat((self.X[idx,:-1],self.D[idx:idx+1].float(),self.X[idx,-1:]),dim = 0).data.cpu().numpy()
+                else:
+                    out_dict[id] = self.X[idx,:].data.cpu().numpy()
+        return out_dict
 
 if __name__ == "__main__":
     """

@@ -314,36 +314,35 @@ class KIOU_Tracker():
         im = im.copy()/255.0
     
         # plot detection bboxes
-        for det in detections:
-            bbox = det[:4]
-            color = (0.4,0.4,0.7) #colors[int(obj.cls)]
-            c1 =  (int(bbox[0]),int(bbox[1]))
-            c2 =  (int(bbox[2]),int(bbox[3]))
-            cv2.rectangle(im,c1,c2,color,1)
-            
-        # plot estimated locations
+        im = self.hg.plot_boxes(im, self.hg.state_to_im(detections))
+          
+        ids = []
+        boxes = []
+        classes = []
+        speeds = []
+        #plot estimated locations
         for id in post_locations:
-            # get class
-            try:
-                most_common = np.argmax(all_classes[id])
-                cls = class_dict[most_common]
-            except:
-                cls = "" 
-            label = "{} {}".format(cls,id)
-            bbox = post_locations[id][:4]
-            
-            if sum(bbox) != 0: # all 0's is the default in the storage array, so ignore these
-                color = self.idx_colors[id]
-                c1 =  (int(bbox[0]),int(bbox[1]))
-                c2 =  (int(bbox[2]),int(bbox[3]))
-                cv2.rectangle(im,c1,c2,color,1)
-                
-                # plot label
-                text_size = 0.8
-                t_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_PLAIN,text_size , 1)[0]
-                c2 = c1[0] + t_size[0] + 3, c1[1] + t_size[1] + 4
-                cv2.rectangle(im, c1, c2,color, -1)
-                cv2.putText(im, label, (c1[0], c1[1] + t_size[1] + 4), cv2.FONT_HERSHEY_PLAIN,text_size, [225,255,255], 1);
+            ids.append(id)
+            boxes.append(post_locations[id][0:6])
+            speeds.append(post_locations[id][6]*30.0) # approximate
+            classes.append(np.argmax(self.all_classes[id]))            
+
+        boxes = torch.from_numpy(np.stack(boxes))
+        boxes = self.hg.state_to_im(boxes)
+        
+        
+        im = self.hg.plot_boxes(im,boxes,color = (0,255,0))
+        
+        for i in range(len(boxes)):
+            # plot label
+            label = "{} {}: {} ft/s".format(self.class_dict[classes[i]],ids[i],speeds[i])            
+            c1 = boxes[i,0,:].int()
+            c1 = c1[0].item(),c1[1].item()
+            text_size = 0.8
+            t_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_PLAIN,text_size , 1)[0]
+            c2 = c1[0] + t_size[0] + 3, c1[1] + t_size[1] + 4
+            cv2.rectangle(im, c1, c2,(0,0,0), -1)
+            cv2.putText(im, label, (c1[0], c1[1] + t_size[1] + 4), cv2.FONT_HERSHEY_PLAIN,text_size, [225,255,255], 1)
         
         # resize to fit on standard monitor
         if im.shape[0] > 1920:
@@ -602,7 +601,7 @@ class KIOU_Tracker():
             # get all object locations and store in output dict
             start = time.time()
             try:
-                post_locations = self.filter.objs()
+                post_locations = self.filter.objs2(with_direction = True)
             except:
                 post_locations = {}
             for id in post_locations:
