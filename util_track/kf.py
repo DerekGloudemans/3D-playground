@@ -34,11 +34,12 @@ class Torch_KF(object):
             If specified, these are used instead of the diagonal values
         """
         # initialize tensors
-        self.meas_size = 4
-        self.state_size = 7
-        self.t = 1/15.0
+        self.meas_size = 5
+        self.state_size = 6
+        self.t = 1/30.0
         self.device = device
         self.X = None
+        self.D = None
         
         self.P0 = torch.zeros(self.state_size,self.state_size) # state covariance
         self.F = torch.zeros(self.state_size,self.state_size) # dynamical model
@@ -56,7 +57,7 @@ class Torch_KF(object):
             
             # these values won't change 
             self.F    = torch.eye(self.state_size).float()
-            self.F[[0,1,2],[4,5,6]] = self.t
+            #self.F[[0,1,2],[4,5,6]] = self.t
             self.H[:4,:4] = torch.eye(4)
             self.Q    = torch.eye(self.state_size).unsqueeze(0) * mod_err                     #+ 1
             self.R    = torch.eye(self.meas_size).unsqueeze(0) * meas_err
@@ -100,7 +101,7 @@ class Torch_KF(object):
         self.mu_R = self.mu_R.to(device).float()
         #self.mu_R2 = self.mu_R.to(device).float()
         
-    def add(self,detections,obj_ids):
+    def add(self,detections,obj_ids,directions):
         """
         Description
         -----------
@@ -118,8 +119,11 @@ class Torch_KF(object):
         if len(detections[0]) == self.meas_size:
             try:
                 newX[:,:self.meas_size] = torch.from_numpy(detections).to(self.device)
+                newD = torch.from_numpy(directions).to(self.device)
             except:
                 newX[:,:self.meas_size] = detections.to(self.device)
+                newD = directions.to(self.device)
+                
         else: # case where velocity estimates are given
             try:
                 newX = torch.from_numpy(detections).to(device)
@@ -128,15 +132,18 @@ class Torch_KF(object):
                 
         newP = self.P0.repeat(len(obj_ids),1,1)
 
+        
         # store state and initialize P with defaults
         try:
             new_idx = len(self.X)
             self.X = torch.cat((self.X,newX), dim = 0)
             self.P = torch.cat((self.P,newP), dim = 0)
+            self.D = torch.cat((self.D,newD), dim = 0)
         except:
             new_idx = 0
             self.X = newX.to(self.device).float()
             self.P = newP.to(self.device)
+            self.D = newD.to(self.device)
             
         # add obj_ids to dictionary
         for id in obj_ids:
@@ -163,7 +170,8 @@ class Torch_KF(object):
             
             self.X = self.X[keepers,:]
             self.P = self.P[keepers,:]
-        
+            self.D = self.D[keepers]
+            
             # since rows were deleted from X and P, shift idxs accordingly
             new_id = 0
             for id in self.obj_idxs:
@@ -171,18 +179,28 @@ class Torch_KF(object):
                     self.obj_idxs[id] = new_id
                     new_id += 1
     
-    def predict(self):
+    def predict(self,dt = None):
         """
         Description:
         -----------
         Uses prediction equations to update X and P without a measurement
         """
         
+        if dt is None:
+            dt = self.t
+            
+        # here we use t and direction. We alter F such that x_dot is signed by direction
+        # and corresponds to the timestep t
+            
         # update X --> X = XF + mu_F--> [n,7] x [7,7] + [n,7] = [n,7]
-        self.X = torch.mm(self.X,self.F.transpose(0,1)) + self.mu_Q
+        #self.X = torch.mm(self.X,self.F.transpose(0,1)) + self.mu_Q
+        F_rep = self.F.unsqueeze(0).repeat(len(self.X),1,1)
+        F_rep[:,0,5] = self.direction * dt
+        self.X = torch.bmm(self.X.unsqueeze(1),F_rep).squeeze(1)
+        
         
         # update P --> P = FPF^(-1) + Q --> [nx7x7] = [nx7x7] bx [nx7x7] bx [nx7x7] + [n+7x7]
-        F_rep = self.F.unsqueeze(0).repeat(len(self.P),1,1)
+        #F_rep = self.F.unsqueeze(0).repeat(len(self.P),1,1)
         step1 = torch.bmm(F_rep,self.P)
         step2 = F_rep.transpose(1,2)
         step3 = torch.bmm(step1,step2)
@@ -243,62 +261,7 @@ class Torch_KF(object):
         # store updated values
         self.X[relevant,:] = X_up
         self.P[relevant,:,:] = P_up
-        
-    def update2(self,detections,obj_ids):
-        """
-        Description
-        -----------
-        Updates state for objects corresponding to each obj_id in obj_ids
-        Equations taken from: wikipedia.org/wiki/Kalman_filter#Predict
-        
-        Parameters
-        ----------
-        detection - np array of size [m,4] 
-            Specifies bounding box x,y,scale and ratio for each of m detections
-        obj_ids - list of length m
-            Unique obj_id (int) for each detection
-        """
-        
-        # get relevant portions of X and P
-        relevant = [self.obj_idxs[id] for id in obj_ids]
-        X_up = self.X[relevant,:]
-        P_up = self.P[relevant,:,:]
-        
-        # state innovation --> y = z - XHt --> mx4 = mx4 - [mx7] x [4x7]t  
-        try:
-            z = torch.from_numpy(detections).to(self.device)
-        except:
-             z = detections.to(self.device)
-        y = z + self.mu_R2 - torch.mm(X_up, self.H.transpose(0,1))  ######### Not sure if this is right but..
-        
-        # covariance innovation --> HPHt + R --> [mx4x4] = [mx4x7] bx [mx7x7] bx [mx4x7]t + [mx4x4]
-        # where bx is batch matrix multiplication broadcast along dim 0
-        # in this case, S = [m,4,4]
-        H_rep = self.H.unsqueeze(0).repeat(len(P_up),1,1)
-        step1 = torch.bmm(H_rep,P_up) # this needs to be batched along dim 0
-        step2 = torch.bmm(step1,H_rep.transpose(1,2))
-        S = step2 + self.R2.repeat(len(P_up),1,1)
-        
-        # kalman gain --> K = P Ht S^(-1) --> [m,7,4] = [m,7,7] bx [m,7,4]t bx [m,4,4]^-1
-        step1 = torch.bmm(P_up,H_rep.transpose(1,2))
-        K = torch.bmm(step1,S.inverse())
-        
-        # A posteriori state estimate --> X_updated = X + Ky --> [mx7] = [mx7] + [mx7x4] bx [mx4x1]
-        # must first unsqueeze y to third dimension, then unsqueeze at end
-        y = y.unsqueeze(-1).float() # [mx4] --> [mx4x1]
-        step1 = torch.bmm(K,y).squeeze(-1) # mx7
-        X_up = X_up + step1
-        
-        # P_updated --> (I-KH)P --> [m,7,7] = ([m,7,7 - [m,7,4] bx [m,4,7]) bx [m,7,7]    
-        I = torch.eye(self.state_size).unsqueeze(0).repeat(len(P_up),1,1).to(self.device)
-        step1 = I - torch.bmm(K,H_rep)
-        P_up = torch.bmm(step1,P_up)
-        
-        # store updated values
-        self.X[relevant,:] = X_up
-        self.P[relevant,:,:] = P_up   
-        
-        
+    
     def objs(self):
         """
         Returns

@@ -34,8 +34,8 @@ class KIOU_Tracker():
                  homography,
                  class_dict,
                  fsld_max = 1,
-                 matching_cutoff = 0.3,
-                 iou_cutoff = 0.5,
+                 matching_cutoff = 0.7,
+                 iou_cutoff = 0.6,
                  det_conf_cutoff = 0.2,
                  PLOT = True,
                  OUT = None,
@@ -95,7 +95,7 @@ class KIOU_Tracker():
         else:
             self.writer = None
         
-        time.sleep(5)
+        time.sleep(1)
         self.n_frames = len(self.loader)
     
         self.next_obj_id = 0             # next id for a new object (incremented during tracking)
@@ -126,7 +126,7 @@ class KIOU_Tracker():
         self.idx_colors = np.random.rand(10000,3)
     
     
-    def manage_tracks(self,detections,matchings,pre_ids):
+    def manage_tracks(self,detections,matchings,pre_ids,labels,scores):
         """
         Updates each detection matched to an existing tracklet, adds new tracklets 
         for unmatched detections, and increments counters / removes tracklets not matched
@@ -134,7 +134,7 @@ class KIOU_Tracker():
         """
         start = time.time()
 
-        # update tracked and matched objects
+        # 1. Update tracked and matched objects
         update_array = np.zeros([len(matchings),4])
         update_ids = []
         update_classes = []
@@ -144,16 +144,17 @@ class KIOU_Tracker():
             a = matchings[i,0] # index of pre_loc
             b = matchings[i,1] # index of detections
            
-            update_array[i,:] = detections[b,:4]
+            update_array[i,:] = detections[b,:5]
             update_ids.append(pre_ids[a])
-            update_classes.append(detections[b,4])
-            update_confs.append(detections[b,5])
+            update_classes.append(labels[b])
+            update_confs.append(scores[b])
             
             self.fsld[pre_ids[a]] = 0 # fsld = 0 since this id was detected this frame
         
         if len(update_array) > 0:    
-            self.filter.update2(update_array,update_ids)
+            self.filter.update(update_array,update_ids)
             
+            # store class and confidence (used to parse good objects)
             for i in range(len(update_ids)):
                 self.all_classes[update_ids[i]][int(update_classes[i])] += 1
                 self.all_confs[update_ids[i]].append(update_confs[i])
@@ -161,35 +162,36 @@ class KIOU_Tracker():
             self.time_metrics['update'] += time.time() - start
               
         
-        # for each detection not in matchings, add a new object
+        # 2. For each detection not in matchings, add a new object
         start = time.time()
         
-        new_array = np.zeros([len(detections) - len(matchings),4])
+        new_array = np.zeros([len(detections) - len(matchings),5])
+        new_directions = np.zeros([len(detections) - len(matchings)])
         new_ids = []
         cur_row = 0
         for i in range(len(detections)):
             if len(matchings) == 0 or i not in matchings[:,1]:
                 
                 new_ids.append(self.next_obj_id)
-                new_array[cur_row,:] = detections[i,:4]
+                new_array[cur_row,:] = detections[i,:5]
+                new_directions[cur_row] = detections[i,5]
 
                 self.fsld[self.next_obj_id] = 0
                 self.all_tracks[self.next_obj_id] = np.zeros([self.n_frames,self.state_size])
-                self.all_classes[self.next_obj_id] = np.zeros(13)
+                self.all_classes[self.next_obj_id] = np.zeros(8)
                 self.all_confs[self.next_obj_id] = []
                 
-                cls = int(detections[i,4])
+                cls = int(labels[i])
                 self.all_classes[self.next_obj_id][cls] += 1
-                self.all_confs[self.next_obj_id].append(detections[i,5])
+                self.all_confs[self.next_obj_id].append(scores[i])
                 
                 self.next_obj_id += 1
                 cur_row += 1
-       
         if len(new_array) > 0:        
-            self.filter.add(new_array,new_ids)
+            self.filter.add(new_array,new_ids,new_directions)
         
         
-        # 7a. For each untracked object, increment fsld        
+        # 3. For each untracked object, increment fsld        
         for i in range(len(pre_ids)):
             try:
                 if i not in matchings[:,0]:
@@ -197,7 +199,8 @@ class KIOU_Tracker():
             except:
                 self.fsld[pre_ids[i]] += 1
         
-        # 8a. remove lost objects
+        
+        # 4. Remove lost objects
         removals = []
         for id in pre_ids:
             if self.fsld[id] >= self.fsld_max:
@@ -207,6 +210,7 @@ class KIOU_Tracker():
             self.filter.remove(removals)    
     
         self.time_metrics['add and remove'] += time.time() - start
+        
     
     
     # TODO - rewrite for new state formulation
@@ -363,7 +367,7 @@ class KIOU_Tracker():
                  good from bad detections, the n_best highest confidence detections are kept
         perform_nms - (bool) if True, NMS is performed
         
-        returns - detections - [d_new,6] array with x,y,l,w,h,direction for each detection kept
+        returns - detections - [d_new,8,2] array with box points in 3D-space
                   labels - [d_new] array with kept classes
                   
                  
@@ -397,14 +401,14 @@ class KIOU_Tracker():
         detections = self.hg.im_to_state(detections,heights = heights)
         
         if perform_nms:
-            idxs = self.state_nms(detections,scores)
+            idxs = self.space_nms(detections,scores)
             labels = labels[idxs]
             detections = detections[idxs]
             scores = scores[idxs]
         
-        return detections, labels
+        return detections, labels, scores
 
-    def state_nms(self,detections,scores,threshold = 0.5):
+    def space_nms(self,detections,scores,threshold = 0.3):
         """
         Performs non-maximal supression on boxes given in state formulation
         detections - [d,6] array of boxes in state formulation
@@ -412,29 +416,20 @@ class KIOU_Tracker():
         threshold - float in range [0,1], boxes with IOU overlap > threshold are pruned
         returns - idxs - indexes of boxes to keep
         """
+        detections = self.hg.state_to_space(detections.clone())
         
-        # convert into xmin ymin xmax ymax form
-        
+        # convert into xmin ymin xmax ymax form        
         boxes_new = torch.zeros([detections.shape[0],4])
-        boxes_new[:,0] = detections[:,0]
-        boxes_new[:,2] = detections[:,0] + detections[:,5] * detections[:,2]
-        boxes_new[:,1] = detections[:,1] - detections[:,5] * detections[:,3]
-        boxes_new[:,3] = detections[:,1] + detections[:,5] * detections[:,3]
-        
-        # flip xmin and ymin as necessary
-        flip = torch.where(detections[:,5] == -1)[0]
-        
-        boxes = torch.clone(boxes_new)
-        boxes[flip,0] = boxes_new[flip,2]
-        boxes[flip,2] = boxes_new[flip,0]
-        boxes[flip,1] = boxes_new[flip,3]
-        boxes[flip,3] = boxes_new[flip,1]
-        
-        idxs = nms(boxes,scores,threshold)
+        boxes_new[:,0] = torch.min(detections[:,0:4,0],dim = 1)[0]
+        boxes_new[:,2] = torch.max(detections[:,0:4,0],dim = 1)[0]
+        boxes_new[:,1] = torch.min(detections[:,0:4,1],dim = 1)[0]
+        boxes_new[:,3] = torch.max(detections[:,0:4,1],dim = 1)[0]
+                
+        idxs = nms(boxes_new,scores,threshold)
         return idxs
         
     # Rewrite again for 3D
-    def match_hungarian(self,first,second,dist_threshold = 50):
+    def match_hungarian(self,first,second):
         """
         Description
         -----------
@@ -461,8 +456,30 @@ class KIOU_Tracker():
             l is not necessarily equal to either n or m (can have unmatched object from both frames)
         
         """
+        
+        if len(first) == 0 or len(second) == 0:
+            return []
+        
+        # first and second are in state form - convert to space form
+        first = self.hg.state_to_space(first.clone())
+        boxes_new = torch.zeros([first.shape[0],4])
+        boxes_new[:,0] = torch.min(first[:,0:4,0],dim = 1)[0]
+        boxes_new[:,2] = torch.max(first[:,0:4,0],dim = 1)[0]
+        boxes_new[:,1] = torch.min(first[:,0:4,1],dim = 1)[0]
+        boxes_new[:,3] = torch.max(first[:,0:4,1],dim = 1)[0]
+        first = boxes_new
+        
+        second = self.hg.state_to_space(second.clone())
+        boxes_new = torch.zeros([second.shape[0],4])
+        boxes_new[:,0] = torch.min(second[:,0:4,0],dim = 1)[0]
+        boxes_new[:,2] = torch.max(second[:,0:4,0],dim = 1)[0]
+        boxes_new[:,1] = torch.min(second[:,0:4,1],dim = 1)[0]
+        boxes_new[:,3] = torch.max(second[:,0:4,1],dim = 1)[0]
+        second = boxes_new
+    
+        
         # find distances between first and second
-        if self.distance_mode == "linear":
+        if False:
             dist = np.zeros([len(first),len(second)])
             for i in range(0,len(first)):
                 for j in range(0,len(second)):
@@ -488,7 +505,7 @@ class KIOU_Tracker():
         # remove any matches too far away
         for i in range(len(matchings)):
             try:
-                if dist[i,matchings[i]] > dist_threshold:
+                if dist[i,matchings[i]] > self.matching_cutoff:
                     matchings[i] = -1
             except:
                 pass
@@ -534,6 +551,7 @@ class KIOU_Tracker():
                 pre_ids.append(id)
                 pre_loc.append(pre_locations[id])
             pre_loc = np.array(pre_loc)  
+            pre_loc = torch.from_numpy(pre_loc)
             
             self.time_metrics['predict'] += time.time() - start
         
@@ -557,28 +575,29 @@ class KIOU_Tracker():
                    
                 # postprocess detections - after this step, remaining detections are in state space
                 start = time.time()
-                detections,labels = self.parse_detections(scores,labels,boxes)
+                detections,labels,scores = self.parse_detections(scores,labels,boxes)
                 self.time_metrics['parse'] += time.time() - start
              
                 
                 # temp check via plotting
-                original_im = self.hg.plot_boxes(original_im,self.hg.state_to_im(detections))
-                cv2.imshow("frame",original_im)
-                cv2.waitKey(0)
-                cv2.destroyAllWindows()
+                if False:
+                    original_im = self.hg.plot_boxes(original_im,self.hg.state_to_im(detections))
+                    cv2.imshow("frame",original_im)
+                    cv2.waitKey(0)
+                    cv2.destroyAllWindows()
                 
                 # match using Hungarian Algorithm        
                 start = time.time()
                 # matchings[i] = [a,b] where a is index of pre_loc and b is index of detection
-                matchings = self.match_hungarian(pre_loc,detections,dist_threshold = self.matching_cutoff)
+                matchings = self.match_hungarian(pre_loc,detections)
                 self.time_metrics['match'] += time.time() - start
                 
                 # Update tracked objects
-                self.manage_tracks(detections,matchings,pre_ids)
+                self.manage_tracks(detections,matchings,pre_ids,labels,scores)
         
                 # remove overlapping objects and anomalies
                 self.remove_overlaps()
-                self.remove_anomalies()
+                #self.remove_anomalies()
                 
             # get all object locations and store in output dict
             start = time.time()
@@ -694,7 +713,8 @@ if __name__ == "__main__":
     else: # set up kf - we assume measurements will simply be given in state formulation x,y,l,w,h,x_dot
         kf = Torch_KF(torch.device("cpu"))
         kf.F = torch.eye(6)
-        kf.F[0,5] = 1
+        kf.F[0,5] = np.nan
+        
         
         kf.H = torch.tensor([
             [1,0,0,0,0,0],

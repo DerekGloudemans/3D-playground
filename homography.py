@@ -340,7 +340,7 @@ class Homography():
         
         # convert points into size [dm,4]
         points = points.reshape(-1,3)
-        points = torch.cat((points,torch.ones([points.shape[0],1])),1).double() # add 4th row
+        points = torch.cat((points.double(),torch.ones([points.shape[0],1]).double()),1) # add 4th row
         
         # [dm,3]
         points = torch.transpose(points,0,1).double()
