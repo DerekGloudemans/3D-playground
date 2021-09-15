@@ -34,7 +34,7 @@ class KIOU_Tracker():
                  homography,
                  class_dict,
                  fsld_max = 3,
-                 matching_cutoff = 0,
+                 matching_cutoff = 0.95,
                  iou_cutoff = 0.2,
                  det_conf_cutoff = 0.5,
                  PLOT = True,
@@ -68,7 +68,7 @@ class KIOU_Tracker():
         self.iou_cutoff = iou_cutoff
         self.det_conf_cutoff = det_conf_cutoff
         self.PLOT = PLOT
-        self.state_size = kf_params["Q"].shape[0]
+        self.state_size = kf_params["Q"].shape[0] + 1 # add one for storing direction as well
         self.downsample = downsample
         
         # CUDA
@@ -285,7 +285,7 @@ class KIOU_Tracker():
         return iou
 
     # TODO - rewrite for 3D boxes
-    def plot(self,im,detections,post_locations,all_classes,class_dict,frame = None):
+    def plot(self,im,detections,post_locations,all_classes,frame = None,pre_locations = None):
         """
         Description
         -----------
@@ -325,7 +325,7 @@ class KIOU_Tracker():
         for id in post_locations:
             ids.append(id)
             boxes.append(post_locations[id][0:6])
-            speeds.append(np.round(np.abs(post_locations[id][6]),1))
+            speeds.append(((np.abs(post_locations[id][6]) * 3600/5280 * 10).round())/10) # in mph
             classes.append(np.argmax(self.all_classes[id]))            
             directions.append("WB" if post_locations[id][5] == -1 else "EB")
 
@@ -337,7 +337,8 @@ class KIOU_Tracker():
         
         for i in range(len(boxes)):
             # plot label
-            label = "{} {}: {}ft/s {}".format(self.class_dict[classes[i]],ids[i],speeds[i],directions[i])            
+            
+            label = "{} {}: {}mph {}".format(self.class_dict[classes[i]],ids[i],speeds[i],directions[i])            
             c1 = boxes[i,0,:].int()
             c1 = c1[0].item(),c1[1].item()
             text_size = 0.8
@@ -345,6 +346,16 @@ class KIOU_Tracker():
             c2 = c1[0] + t_size[0] + 3, c1[1] + t_size[1] + 4
             cv2.rectangle(im, c1, c2,(0,0,0), -1)
             cv2.putText(im, label, (c1[0], c1[1] + t_size[1] + 4), cv2.FONT_HERSHEY_PLAIN,text_size, [225,255,255], 1)
+        
+        
+        if pre_locations is not None and len(pre_locations) > 0:
+            
+            # pre_boxes = []
+            # for id in pre_locations:
+            #     pre_boxes.append(pre_locations[id][0:6])
+            # pre_boxes = torch.from_numpy(np.stack(pre_boxes))
+            pre_boxes = self.hg.state_to_im(pre_locations)
+            im = self.hg.plot_boxes(im,pre_boxes,color = (0,0,255))
         
         # resize to fit on standard monitor
         if im.shape[0] > 1920:
@@ -617,7 +628,7 @@ class KIOU_Tracker():
             # Plot
             start = time.time()
             if self.PLOT:
-                self.plot(original_im,detections,post_locations,self.all_classes,self.class_dict,frame = frame_num)
+                self.plot(original_im,detections,post_locations,self.all_classes,frame = frame_num,pre_locations = pre_loc)
             self.time_metrics['plot'] += time.time() - start
        
             # load next frame  
@@ -629,6 +640,8 @@ class KIOU_Tracker():
             
             print("\rTracking frame {} of {}".format(frame_num,self.n_frames), end = '\r', flush = True)
             
+            if frame_num > 1500:
+                break
             
         # clean up at the end
         self.end_time = time.time()
@@ -655,7 +668,7 @@ if __name__ == "__main__":
     device = torch.device("cuda:0" if use_cuda else "cpu")
     
     
-    classes = { "sedan":0,
+    class_dict = { "sedan":0,
                     "midsize":1,
                     "van":2,
                     "pickup":3,
@@ -671,7 +684,7 @@ if __name__ == "__main__":
                     4:"semi",
                     5:"truck (other)",
                     6:"motorcycle",
-                    7:"trailer",
+                    7:"trailer"
                     }
     
     #%% Load necessary files
@@ -726,16 +739,16 @@ if __name__ == "__main__":
             ])
     
         kf.P = torch.tensor([
-            [300,0,0,0,0,0],
+            [10,0,0,0,0,0],
             [0,100,0,0,0,0],
             [0,0,100,0,0,0],
             [0,0,0,100 ,0,0],
             [0,0,0,0,100,0],
-            [0,0,0,0,0,2000]
+            [0,0,0,0,0,10000]
             ])
     
-        kf.Q = torch.eye(6)
-        kf.R = torch.eye(5) * 5
+        kf.Q = torch.eye(6) 
+        kf.R = torch.eye(5) 
         kf.mu_R = torch.zeros(5)
         kf.mu_Q = torch.zeros(6)
         kf_params = {
@@ -750,6 +763,6 @@ if __name__ == "__main__":
         
     
     #%% Run tracker
-    tracker = KIOU_Tracker(sequence,detector,kf_params,hg,classes)
+    tracker = KIOU_Tracker(sequence,detector,kf_params,hg,class_dict,OUT = "track_ims")
     tracker.track()
     

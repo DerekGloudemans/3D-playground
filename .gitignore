@@ -4,3 +4,5 @@
 pytorch_retinanet_detector/images/
 
 *.pth
+
+track_ims/

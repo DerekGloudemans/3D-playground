@@ -198,7 +198,7 @@ class Torch_KF(object):
         #self.X = torch.mm(self.X,self.F.transpose(0,1)) + self.mu_Q
         F_rep = self.F.unsqueeze(0).repeat(len(self.X),1,1)
         F_rep[:,0,5] = self.D * dt
-        self.X = torch.bmm(self.X.unsqueeze(1),F_rep).squeeze(1)
+        self.X = torch.bmm(F_rep,self.X.unsqueeze(2)).squeeze(2)
         
         
         # update P --> P = FPF^(-1) + Q --> [nx7x7] = [nx7x7] bx [nx7x7] bx [nx7x7] + [n+7x7]
