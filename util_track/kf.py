@@ -185,6 +185,8 @@ class Torch_KF(object):
         -----------
         Uses prediction equations to update X and P without a measurement
         """
+        if self.X is None or len(self.X) == 0:
+            return
         
         if dt is None:
             dt = self.t
@@ -195,7 +197,7 @@ class Torch_KF(object):
         # update X --> X = XF + mu_F--> [n,7] x [7,7] + [n,7] = [n,7]
         #self.X = torch.mm(self.X,self.F.transpose(0,1)) + self.mu_Q
         F_rep = self.F.unsqueeze(0).repeat(len(self.X),1,1)
-        F_rep[:,0,5] = self.direction * dt
+        F_rep[:,0,5] = self.D * dt
         self.X = torch.bmm(self.X.unsqueeze(1),F_rep).squeeze(1)
         
         
@@ -262,22 +264,22 @@ class Torch_KF(object):
         self.X[relevant,:] = X_up
         self.P[relevant,:,:] = P_up
     
-    def objs(self,with_direction = False):
-        """
-        Returns
-        -------
-        out_dict - dictionary
-            Current state of each object indexed by obj_id (int)
-        """
+    # def objs(self,with_direction = False):
+    #     """
+    #     Returns
+    #     -------
+    #     out_dict - dictionary
+    #         Current state of each object indexed by obj_id (int)
+    #     """
         
-        out_dict = {}
-        for id in self.obj_idxs:
-            idx = self.obj_idxs[id]
-            if idx is not None:
-                out_dict[id] = self.X[idx,:].data.cpu().numpy()
-        return out_dict        
+    #     out_dict = {}
+    #     for id in self.obj_idxs:
+    #         idx = self.obj_idxs[id]
+    #         if idx is not None:
+    #             out_dict[id] = self.X[idx,:].data.cpu().numpy()
+    #     return out_dict        
 
-    def objs2(self,with_direction = False):
+    def objs(self,with_direction = False):
         """
         Returns
         -------

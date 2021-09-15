@@ -33,10 +33,10 @@ class KIOU_Tracker():
                  kf_params,
                  homography,
                  class_dict,
-                 fsld_max = 1,
-                 matching_cutoff = 0.7,
-                 iou_cutoff = 0.6,
-                 det_conf_cutoff = 0.2,
+                 fsld_max = 3,
+                 matching_cutoff = 0,
+                 iou_cutoff = 0.2,
+                 det_conf_cutoff = 0.5,
                  PLOT = True,
                  OUT = None,
                  downsample = 1,
@@ -135,7 +135,7 @@ class KIOU_Tracker():
         start = time.time()
 
         # 1. Update tracked and matched objects
-        update_array = np.zeros([len(matchings),4])
+        update_array = np.zeros([len(matchings),5])
         update_ids = []
         update_classes = []
         update_confs = []
@@ -320,12 +320,14 @@ class KIOU_Tracker():
         boxes = []
         classes = []
         speeds = []
+        directions = []
         #plot estimated locations
         for id in post_locations:
             ids.append(id)
             boxes.append(post_locations[id][0:6])
-            speeds.append(post_locations[id][6]*30.0) # approximate
+            speeds.append(np.round(np.abs(post_locations[id][6]),1))
             classes.append(np.argmax(self.all_classes[id]))            
+            directions.append("WB" if post_locations[id][5] == -1 else "EB")
 
         boxes = torch.from_numpy(np.stack(boxes))
         boxes = self.hg.state_to_im(boxes)
@@ -335,7 +337,7 @@ class KIOU_Tracker():
         
         for i in range(len(boxes)):
             # plot label
-            label = "{} {}: {} ft/s".format(self.class_dict[classes[i]],ids[i],speeds[i])            
+            label = "{} {}: {}ft/s {}".format(self.class_dict[classes[i]],ids[i],speeds[i],directions[i])            
             c1 = boxes[i,0,:].int()
             c1 = c1[0].item(),c1[1].item()
             text_size = 0.8
@@ -540,7 +542,7 @@ class KIOU_Tracker():
             start = time.time()
             try: # in the case that there are no active objects will throw exception
                 self.filter.predict()
-                pre_locations = self.filter.objs()
+                pre_locations = self.filter.objs(with_direction = True)
             except:
                 pre_locations = []    
                 
@@ -601,7 +603,7 @@ class KIOU_Tracker():
             # get all object locations and store in output dict
             start = time.time()
             try:
-                post_locations = self.filter.objs2(with_direction = True)
+                post_locations = self.filter.objs(with_direction = True)
             except:
                 post_locations = {}
             for id in post_locations:
@@ -639,7 +641,7 @@ if __name__ == "__main__":
     
     #%% Set parameters
     camera_name = "p1c2"
-    s_idx = "0"
+    s_idx = "2"
     
     vp_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp/{}_axes.csv".format(camera_name)
     point_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform/{}_im_lmcs_transform_points.csv".format(camera_name)
@@ -724,12 +726,12 @@ if __name__ == "__main__":
             ])
     
         kf.P = torch.tensor([
-            [30,0,0,0,0,0,0],
-            [0,10,0,0,0,0,0],
-            [0,0,15,0,0,0,0],
-            [0,0,0,10,0,0,0],
-            [0,0,0,0,10,0,0],
-            [0,0,0,0,0,0,20]
+            [300,0,0,0,0,0],
+            [0,100,0,0,0,0],
+            [0,0,100,0,0,0],
+            [0,0,0,100 ,0,0],
+            [0,0,0,0,100,0],
+            [0,0,0,0,0,2000]
             ])
     
         kf.Q = torch.eye(6)
