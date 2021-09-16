@@ -368,7 +368,7 @@ class KIOU_Tracker():
             self.writer(im)
 
     # TODO - rewrite for 3D 
-    def parse_detections(self,scores,labels,boxes,n_best = 200,perform_nms = True):
+    def parse_detections(self,scores,labels,boxes,n_best = 200,perform_nms = True,refine_height = False):
         """
         Removes low confidence detection, converts detections to state space, and
         optionally performs non-maximal-supression
@@ -408,17 +408,22 @@ class KIOU_Tracker():
         detections = detections.reshape(-1,10,2)
         detections = detections[:,:8,:] # drop 2D boxes
         
-        # TODO - add in height information
         heights = self.hg.guess_heights(labels)
-        detections = self.hg.im_to_state(detections,heights = heights)
+        boxes = self.hg.im_to_state(detections,heights = heights)
+        
+        if refine_height:
+            repro_boxes = self.hg.state_to_im(boxes)
+            
+            refined_heights = self.hg.height_from_template(repro_boxes,heights,detections)
+            boxes = self.hg.im_to_state(detections,heights = refined_heights)
         
         if perform_nms:
-            idxs = self.space_nms(detections,scores)
+            idxs = self.space_nms(boxes,scores)
             labels = labels[idxs]
-            detections = detections[idxs]
+            boxes = boxes[idxs]
             scores = scores[idxs]
         
-        return detections, labels, scores
+        return boxes, labels, scores
 
     def space_nms(self,detections,scores,threshold = 0.3):
         """
@@ -587,7 +592,7 @@ class KIOU_Tracker():
                    
                 # postprocess detections - after this step, remaining detections are in state space
                 start = time.time()
-                detections,labels,scores = self.parse_detections(scores,labels,boxes)
+                detections,labels,scores = self.parse_detections(scores,labels,boxes,refine_height = True)
                 self.time_metrics['parse'] += time.time() - start
              
                 

@@ -458,6 +458,8 @@ class Homography():
                 return
             else:
                 guess_heights = self.guess_heights(classes)
+                
+                
         else:
             guess_heights = heights
             
