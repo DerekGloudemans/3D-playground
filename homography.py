@@ -401,6 +401,41 @@ class Homography():
             
         return heights
     
+    def height_from_template(self,template_boxes,template_space_heights,boxes):
+        """
+        Predicts space height of boxes in image space. Given a space height and 
+        the corresponding image box (and thus image height), the relationship 
+        between heights in different coordinate systems should be roughly estimable. 
+        This strategy is used to guess the heights of the second set of boxes in
+        image space according to : 
+            template_im_heights:template_space_heights = new_im_heights:new_box heights
+            
+        template_boxes - [d,m,2,] array of points corresponding to d object boxes 
+                         (typical usage would be to use boxes from previous frame
+                         or apriori box predictions for current frame))
+        template_space_heights - [d] array of corresponding object heights in space
+        boxes - [d,m,2] array of points in image
+        
+        returns
+        
+        height - [d] array of object heights in space
+        """
+        
+        # get rough heights of objects in image
+        template_top = torch.mean(template_boxes[:,4:8,:],dim = 1)
+        template_bottom = torch.mean(template_boxes[:,0:4,:],dim = 1)
+        template_im_height = torch.sum(torch.sqrt(torch.pow((template_top - template_bottom),2)),dim = 1)
+        template_ratio = template_im_height / template_space_heights
+        
+        box_top    = torch.mean(boxes[:,4:8,:],dim = 1)
+        box_bottom = torch.mean(boxes[:,0:4,:],dim = 1)
+        box_height = torch.sum(torch.sqrt(torch.pow((box_top - box_bottom),2)),dim = 1)
+
+
+        height = box_height / template_ratio
+        return height
+    
+    
     def test_transformation(self,points,classes = None,name = None, im = None,heights = None, verbose = True):
         """
         Transform image -> space -> state -> space -> image and 

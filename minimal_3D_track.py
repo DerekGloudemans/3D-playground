@@ -654,7 +654,7 @@ if __name__ == "__main__":
     
     #%% Set parameters
     camera_name = "p1c2"
-    s_idx = "2"
+    s_idx = "0"
     
     vp_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp/{}_axes.csv".format(camera_name)
     point_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform/{}_im_lmcs_transform_points.csv".format(camera_name)
@@ -763,6 +763,6 @@ if __name__ == "__main__":
         
     
     #%% Run tracker
-    tracker = KIOU_Tracker(sequence,detector,kf_params,hg,class_dict,OUT = "track_ims")
+    tracker = KIOU_Tracker(sequence,detector,kf_params,hg,class_dict,OUT = None) # OUT = "track_ims"
     tracker.track()
     

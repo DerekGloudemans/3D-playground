@@ -220,6 +220,11 @@ def load_to_queue_video(image_queue,sequence,device,queue_size):
                 image_queue.put(frame)       
                 break
             else:
+                
+                # timestamp = parse_frame_timestamp(frame_pixels = original_im, timestamp_geometry = geom, precomputed_checksums = checksums)
+                # if timestamp[0] is None:
+                #     timestamp = None
+                
                 original_im = cv2.resize(original_im,(1920,1080))
                 im = F.to_tensor(original_im)
                 im = F.normalize(im,mean=[0.485, 0.456, 0.406],
