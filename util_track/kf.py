@@ -73,11 +73,19 @@ class Torch_KF(object):
             self.H  = INIT["H"]
             self.Q  = INIT["Q"].unsqueeze(0)
             self.R  = INIT["R"].unsqueeze(0) 
-            #self.R[0,2,2] *= 100 # increase uncertainty in localizer scale
-            #self.R2  = INIT["R2"].unsqueeze(0)  
+            
             self.mu_Q = INIT["mu_Q"].unsqueeze(0) 
             self.mu_R = INIT["mu_R"].unsqueeze(0)
-            #self.mu_R2 = INIT["mu_R2"].unsqueeze(0)
+            
+            if "R2" in INIT.keys():
+                self.R2  = INIT["R2"].unsqueeze(0).to(device).float()  
+                self.mu_R2 = INIT["mu_R2"].unsqueeze(0).to(device).float()
+                self.H2 = INIT["H2"].to(device).float()
+            if "R3" in INIT.keys():
+                self.R3  = INIT["R3"].unsqueeze(0).to(device).float()
+                self.mu_R3 = INIT["mu_R3"].unsqueeze(0).to(device).float()
+                self.H3 = INIT["H3"].to(device).float()
+
 
             self.state_size = self.F.shape[0]
             self.meas_size  =  self.H.shape[0]
@@ -210,7 +218,7 @@ class Torch_KF(object):
         self.P = step3 + step4
         
         
-    def update(self,detections,obj_ids):
+    def update(self,detections,obj_ids,measurement_idx = 1):
         """
         Description
         -----------
@@ -225,6 +233,22 @@ class Torch_KF(object):
             Unique obj_id (int) for each detection
         """
         
+        if measurement_idx == 1:
+            mu_R = self.mu_R
+            H = self.H
+            R = self.R
+        elif measurement_idx == 2:
+            mu_R = self.mu_R2
+            R = self.R2
+            H = self.H2
+        elif measurement_idx == 3:
+            mu_R = self.mu_R3
+            R = self.R3
+            H = self.H3        
+        else:
+            print("This measurement index does not exist in this filter")
+            raise ValueError
+        
         # get relevant portions of X and P
         relevant = [self.obj_idxs[id] for id in obj_ids]
         X_up = self.X[relevant,:]
@@ -235,15 +259,15 @@ class Torch_KF(object):
             z = torch.from_numpy(detections).to(self.device)
         except:
              z = detections.to(self.device)
-        y = z + self.mu_R - torch.mm(X_up, self.H.transpose(0,1))  ######### Not sure if this is right but..
+        y = z + mu_R - torch.mm(X_up, H.transpose(0,1))  ######### Not sure if this is right but..
         
         # covariance innovation --> HPHt + R --> [mx4x4] = [mx4x7] bx [mx7x7] bx [mx4x7]t + [mx4x4]
         # where bx is batch matrix multiplication broadcast along dim 0
         # in this case, S = [m,4,4]
-        H_rep = self.H.unsqueeze(0).repeat(len(P_up),1,1)
+        H_rep = H.unsqueeze(0).repeat(len(P_up),1,1)
         step1 = torch.bmm(H_rep,P_up) # this needs to be batched along dim 0
         step2 = torch.bmm(step1,H_rep.transpose(1,2))
-        S = step2 + self.R.repeat(len(P_up),1,1)
+        S = step2 + R.repeat(len(P_up),1,1)
         
         # kalman gain --> K = P Ht S^(-1) --> [m,7,4] = [m,7,7] bx [m,7,4]t bx [m,4,4]^-1
         step1 = torch.bmm(P_up,H_rep.transpose(1,2))

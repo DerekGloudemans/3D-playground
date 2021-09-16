@@ -285,7 +285,7 @@ class KIOU_Tracker():
         return iou
 
     # TODO - rewrite for 3D boxes
-    def plot(self,im,detections,post_locations,all_classes,frame = None,pre_locations = None):
+    def plot(self,im,detections,post_locations,all_classes,frame = None,pre_locations = None,label_len = 1):
         """
         Description
         -----------
@@ -321,6 +321,7 @@ class KIOU_Tracker():
         classes = []
         speeds = []
         directions = []
+        dims = []
         #plot estimated locations
         for id in post_locations:
             ids.append(id)
@@ -328,7 +329,8 @@ class KIOU_Tracker():
             speeds.append(((np.abs(post_locations[id][6]) * 3600/5280 * 10).round())/10) # in mph
             classes.append(np.argmax(self.all_classes[id]))            
             directions.append("WB" if post_locations[id][5] == -1 else "EB")
-
+            dims.append((post_locations[id][2:5]*10).round(0)/10)
+            
         boxes = torch.from_numpy(np.stack(boxes))
         boxes = self.hg.state_to_im(boxes)
         
@@ -338,15 +340,33 @@ class KIOU_Tracker():
         for i in range(len(boxes)):
             # plot label
             
-            label = "{} {}: {}mph {}".format(self.class_dict[classes[i]],ids[i],speeds[i],directions[i])            
-            c1 = boxes[i,0,:].int()
-            c1 = c1[0].item(),c1[1].item()
+            label = "{} {}:".format(self.class_dict[classes[i]],ids[i],)          
+            label2 = "{:.1f}mph {}".format(speeds[i],directions[i])   
+            label3 = "L: {:.1f}ft".format(dims[i][0])
+            label4 = "W: {:.1f}ft".format(dims[i][1])
+            label5 = "H: {:.1f}ft".format(dims[i][2])
+            
+            full_label = [label,label2,label3,label4,label5]
+            full_label = full_label[:label_len]
+            
+            longest_label = max([item for item in full_label],key = len)
+            
             text_size = 0.8
-            t_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_PLAIN,text_size , 1)[0]
-            c2 = c1[0] + t_size[0] + 3, c1[1] + t_size[1] + 4
+            t_size = cv2.getTextSize(longest_label, cv2.FONT_HERSHEY_PLAIN,text_size , 1)[0]
+
+            # find minx and maxy 
+            minx = torch.min(boxes[i,:,0])
+            maxy = torch.max(boxes[i,:,1])
+            
+            c1 = (int(minx),int(maxy))
+            c2 = int(c1[0] + t_size[0] + 10), int(c1[1] + len(full_label)*(t_size[1] +4)) 
             cv2.rectangle(im, c1, c2,(0,0,0), -1)
-            cv2.putText(im, label, (c1[0], c1[1] + t_size[1] + 4), cv2.FONT_HERSHEY_PLAIN,text_size, [225,255,255], 1)
-        
+            
+            offset = t_size[1] + 4
+            for label in full_label:
+                
+                c1 = c1[0],c1[1] + offset
+                cv2.putText(im, label, c1, cv2.FONT_HERSHEY_PLAIN,text_size, [225,255,255], 1)
         
         if pre_locations is not None and len(pre_locations) > 0:
             
@@ -535,6 +555,24 @@ class KIOU_Tracker():
         return np.array(out_matchings)
         
 
+    def tweak_sizes(self):
+        """
+        TODO - write a bomb.com description here DEREK
+        """
+        
+        # get classes for each object
+        objs = self.filter.objs()
+        ids = list(objs.keys())
+        classes = [np.argmax(self.all_classes[id]) for id in ids]
+        
+        # get expected dimensions for each object
+        dimensions = torch.from_numpy(np.stack([self.hg.class_dims[self.class_dict[cls]] for cls in classes]))
+                        
+        # perform upated in kf
+        self.filter.update(dimensions,ids,measurement_idx = 3)
+        
+        
+        
 
     def track(self):
         """
@@ -616,6 +654,9 @@ class KIOU_Tracker():
                 self.remove_overlaps()
                 #self.remove_anomalies()
                 
+                # tweak sizes to better match canonical class sizes
+                self.tweak_sizes()
+                
             # get all object locations and store in output dict
             start = time.time()
             try:
@@ -633,7 +674,7 @@ class KIOU_Tracker():
             # Plot
             start = time.time()
             if self.PLOT:
-                self.plot(original_im,detections,post_locations,self.all_classes,frame = frame_num,pre_locations = pre_loc)
+                self.plot(original_im,detections,post_locations,self.all_classes,frame = frame_num,pre_locations = pre_loc,label_len = 5)
             self.time_metrics['plot'] += time.time() - start
        
             # load next frame  
@@ -756,6 +797,15 @@ if __name__ == "__main__":
         kf.R = torch.eye(5) 
         kf.mu_R = torch.zeros(5)
         kf.mu_Q = torch.zeros(6)
+        
+        R3 = torch.eye(3)
+        mu_R3 = torch.zeros(3)
+        H3 = torch.tensor([
+            [0,0,1,0,0,0],
+            [0,0,0,1,0,0],
+            [0,0,0,0,1,0]
+            ])
+        
         kf_params = {
             "mu_Q":kf.mu_Q,
             "mu_R":kf.mu_R,
@@ -763,11 +813,14 @@ if __name__ == "__main__":
             "H":kf.H,
             "P":kf.P,
             "Q":kf.Q,
-            "R":kf.R
+            "R":kf.R,
+            "R3":R3,
+            "mu_R3":mu_R3,
+            "H3":H3
             }
         
     
     #%% Run tracker
-    tracker = KIOU_Tracker(sequence,detector,kf_params,hg,class_dict,OUT = None) # OUT = "track_ims"
+    tracker = KIOU_Tracker(sequence,detector,kf_params,hg,class_dict, OUT = "track_ims")
     tracker.track()
     

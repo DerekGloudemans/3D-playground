@@ -131,6 +131,20 @@ class Homography():
                 "other":5
             }
         
+        
+        self.class_dims = {
+                "sedan":[16,6,4],
+                "midsize":[18,6.5,5],
+                "van":[20,6,6.5],
+                "pickup":[20,6,5],
+                "semi":[55,9,12],
+                "truck (other)":[25,9,12],
+                "truck": [25,9,12],
+                "motorcycle":[7,3,4],
+                "trailer":[16,7,3],
+                "other":[18,6.5,5]
+            }
+        
         self.default_correspondence = None
     
     def add_i24_camera(self,point_path,vp_path,camera_name):
