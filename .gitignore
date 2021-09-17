@@ -6,3 +6,7 @@ pytorch_retinanet_detector/images/
 *.pth
 
 track_ims/
+
+_outputs/
+
+final_saved_alpha_timestamps.cpkl
