@@ -1,27 +1,28 @@
-import os,sys,inspect
+import os,sys
 import numpy as np
 import random 
+import re
 import time
-random.seed = 0
+import _pickle as pickle
+import csv
 import cv2
-from PIL import Image
 import torch
+random.seed(0)
+
+
 from torchvision.transforms import functional as F
 from torchvision.ops import roi_align, nms
-import matplotlib.pyplot  as plt
 from scipy.optimize import linear_sum_assignment
-import _pickle as pickle
 
 # add relevant packages and directories to path
 detector_path = os.path.join(os.getcwd(),"pytorch_retinanet_detector_directional")
 sys.path.insert(0,detector_path)
 from pytorch_retinanet_detector_directional.retinanet.model import resnet50 
 
-# filter and frame loader
+# filter,homography, and frame loader
 from util_track.mp_loader import FrameLoader
 from util_track.kf import Torch_KF
 from util_track.mp_writer import OutputWriter
-
 from homography import Homography, load_i24_csv
 
 
@@ -36,7 +37,7 @@ class KIOU_Tracker():
                  fsld_max = 3,
                  matching_cutoff = 0.95,
                  iou_cutoff = 0.2,
-                 det_conf_cutoff = 0.5,
+                 det_conf_cutoff = 0.3,
                  PLOT = True,
                  OUT = None,
                  downsample = 1,
@@ -62,7 +63,9 @@ class KIOU_Tracker():
         """
         
         #store parameters
-
+        self.output_dir = "_outputs"
+        
+        self.sequence = sequence
         self.fsld_max = fsld_max
         self.matching_cutoff = matching_cutoff
         self.iou_cutoff = iou_cutoff
@@ -314,7 +317,8 @@ class KIOU_Tracker():
         im = im.copy()/255.0
     
         # plot detection bboxes
-        im = self.hg.plot_boxes(im, self.hg.state_to_im(detections))
+        if len(detections) > 0:
+            im = self.hg.plot_boxes(im, self.hg.state_to_im(detections))
           
         ids = []
         boxes = []
@@ -331,11 +335,10 @@ class KIOU_Tracker():
             directions.append("WB" if post_locations[id][5] == -1 else "EB")
             dims.append((post_locations[id][2:5]*10).round(0)/10)
             
-        boxes = torch.from_numpy(np.stack(boxes))
-        boxes = self.hg.state_to_im(boxes)
-        
-        
-        im = self.hg.plot_boxes(im,boxes,color = (0,255,0))
+        if len(boxes) > 0:
+            boxes = torch.from_numpy(np.stack(boxes))
+            boxes = self.hg.state_to_im(boxes)
+            im = self.hg.plot_boxes(im,boxes,color = (255,0,0))
         
         for i in range(len(boxes)):
             # plot label
@@ -375,7 +378,7 @@ class KIOU_Tracker():
             #     pre_boxes.append(pre_locations[id][0:6])
             # pre_boxes = torch.from_numpy(np.stack(pre_boxes))
             pre_boxes = self.hg.state_to_im(pre_locations)
-            im = self.hg.plot_boxes(im,pre_boxes,color = (0,0,255))
+            im = self.hg.plot_boxes(im,pre_boxes,color = (0,255,255))
         
         # resize to fit on standard monitor
         if im.shape[0] > 1920:
@@ -405,7 +408,7 @@ class KIOU_Tracker():
                  
         """
         if len(scores) == 0:
-            return []
+            return [],[],[]
         
         # remove duplicates
         cutoff = torch.ones(scores.shape) * self.det_conf_cutoff
@@ -423,7 +426,8 @@ class KIOU_Tracker():
             detections  = boxes[keepers]
             scores = scores[keepers]
         
-        
+        if len(detections) == 0:
+            return [],[],[]
         # Homography object expects boxes in the form [d,8,2] - reshape detections
         detections = detections.reshape(-1,10,2)
         detections = detections[:,:8,:] # drop 2D boxes
@@ -566,11 +570,12 @@ class KIOU_Tracker():
         classes = [np.argmax(self.all_classes[id]) for id in ids]
         
         # get expected dimensions for each object
-        dimensions = torch.from_numpy(np.stack([self.hg.class_dims[self.class_dict[cls]] for cls in classes]))
-                        
-        # perform upated in kf
-        self.filter.update(dimensions,ids,measurement_idx = 3)
-        
+        if len(classes) > 0:
+            dimensions = torch.from_numpy(np.stack([self.hg.class_dims[self.class_dict[cls]] for cls in classes]))
+                            
+            # perform upated in kf
+            self.filter.update(dimensions,ids,measurement_idx = 3)
+            
         
         
 
@@ -684,22 +689,174 @@ class KIOU_Tracker():
             self.time_metrics["load"] = time.time() - start
             torch.cuda.empty_cache()
             
-            print("\rTracking frame {} of {}".format(frame_num,self.n_frames), end = '\r', flush = True)
+            fps = frame_num / (time.time() - self.start_time)
+            fps_noload = frame_num / (time.time() - self.start_time - self.time_metrics["load"] - self.time_metrics["plot"])
+            print("\rTracking frame {} of {} at {:.1f} FPS ({:.1f} FPS without loading and plotting)".format(frame_num,self.n_frames,fps,fps_noload), end = '\r', flush = True)
             
-            if frame_num > 1500:
+            if frame_num > 10:
                 break
             
         # clean up at the end
         self.end_time = time.time()
         cv2.destroyAllWindows()
         
+    def write_results_csv(self):
+        """
+        Write data as csv, adhering to the data template on https://github.com/DerekGloudemans/manual-track-labeler
+        A few notes:
+            - 2D box is populated based on reprojected 3D box
+            - 3D box is populated based on state->im reprojection
+            - vel_x and vel_y are not populated 
+            - theta is constained to be either 0 or pi (based on direction)
+            - LMCS coordinates are populated based on state->space conversion
+            - Acceleration is not calculated 
+            - Height is added as column 44
+            - Temporarily, timestamps are parsed from a separate timestamp data .pkl file 
+        """
+        outfile = self.sequence.split(".")[0] + "_3D_track_outputs.csv"
+        if self.output_dir is not None:
+            outfile = os.path.join(self.output_dir,outfile.split("/")[-1])
+
+        
+        # load timestamps from file - TODO - CHANGE LATER
+        with open("/home/worklab/Documents/derek/3D-playground/final_saved_alpha_timestamps.cpkl","rb") as f:
+            ts = pickle.load(f)
+        
+        self.timestamps = ts[self.sequence.split("/")[-1].split(".mp4")[0] + "_4k"]
+        camera = re.search("p\dc\d",self.sequence).group(0)
+        
+        # create main data header
+        data_header = [
+            "Frame #",
+            "Timestamp",
+            "Object ID",
+            "Object class",
+            "BBox xmin",
+            "BBox ymin",
+            "BBox xmax",
+            "BBox ymax",
+            "vel_x",
+            "vel_y",
+            "Generation method",
+            "fbrx",
+            "fbry",
+            "fblx",
+            "fbly",
+            "bbrx",
+            "bbry",
+            "bblx",
+            "bbly",
+            "ftrx",
+            "ftry",
+            "ftlx",
+            "ftly",
+            "btrx",
+            "btry",
+            "btlx",
+            "btly",
+            "fbr_x",
+            "fbr_y",
+            "fbl_x",
+            "fbl_y",
+            "bbr_x",
+            "bbr_y",
+            "bbl_x",
+            "bbl_y",
+            "direction",
+            "camera",
+            "acceleration",
+            "speed",
+            "veh rear x",
+            "veh center y",
+            "theta",
+            "width",
+            "length"
+            ]
+
+        
+        
+        
+        with open(outfile, mode='w') as f:
+            out = csv.writer(f, delimiter=',')
+            
+            # write main chunk
+            out.writerow(data_header)
+            
+            for frame in range(self.n_frames):
+                try:
+                    timestamp = self.timestamps[frame]
+                except:
+                    timestamp = -1
+                
+                # if frame % self.d == 0:
+                #     gen = "3D Detector"
+                # elif self.localizer is not None and (frame % self.d)%self.s == 0:
+                #     gen = "3D Localizer"
+                # else:
+                #     gen = "Filter prediction"
+                gen = "3D Detector"
+                
+                for id in self.all_tracks:
+                    state = self.all_tracks[id][frame]
+                    state = torch.from_numpy(state).float()
+                    
+                    if state[0] != 0:
+                        
+                        # generate space coords
+                        space = self.hg.state_to_space(state.unsqueeze(0))
+                        space = space.squeeze(0)[:4,:2]
+                        flat_space = list(space.reshape(-1).data.numpy())
+                        
+                        # generate im coords
+                        bbox_3D = self.hg.state_to_im(state.unsqueeze(0))
+                        flat_3D = list(bbox_3D.squeeze(0).reshape(-1).data.numpy())
+                        
+                        # generate im 2D bbox
+                        minx = torch.min(bbox_3D[:,:,0],dim = 1)[0].item()
+                        maxx = torch.max(bbox_3D[:,:,0],dim = 1)[0].item()
+                        miny = torch.min(bbox_3D[:,:,1],dim = 1)[0].item()
+                        maxy = torch.max(bbox_3D[:,:,1],dim = 1)[0].item()
+                        
+                        
+                        obj_line = []
+                        
+                        obj_line.append(frame)
+                        obj_line.append(timestamp)
+                        obj_line.append(id)
+                        obj_line.append(self.class_dict[np.argmax(self.all_classes[id])])
+                        obj_line.append(minx)
+                        obj_line.append(miny)
+                        obj_line.append(maxx)
+                        obj_line.append(maxy)
+                        obj_line.append(0)
+                        obj_line.append(0)
+
+                        obj_line.append(gen)
+                        obj_line = obj_line + flat_3D + flat_space 
+                        state = state.data.numpy()
+                        obj_line.append(state[5])
+                        
+                        obj_line.append(camera)
+                        
+                        obj_line.append(0) # acceleration = 0 assumption
+                        obj_line.append(state[6])
+                        obj_line.append(state[0])
+                        obj_line.append(state[1])
+                        obj_line.append(state[2])
+                        obj_line.append(state[3])
+                        obj_line.append(state[4])
+
+                        out.writerow(obj_line)
+        # end file writing
+        
+                
         
         
 if __name__ == "__main__":
     
     
     #%% Set parameters
-    camera_name = "p1c2"
+    camera_name = "p1c4"
     s_idx = "0"
     
     vp_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp/{}_axes.csv".format(camera_name)
@@ -798,7 +955,7 @@ if __name__ == "__main__":
         kf.mu_R = torch.zeros(5)
         kf.mu_Q = torch.zeros(6)
         
-        R3 = torch.eye(3)
+        R3 = torch.eye(3) *5
         mu_R3 = torch.zeros(3)
         H3 = torch.tensor([
             [0,0,1,0,0,0],
@@ -823,4 +980,4 @@ if __name__ == "__main__":
     #%% Run tracker
     tracker = KIOU_Tracker(sequence,detector,kf_params,hg,class_dict, OUT = "track_ims")
     tracker.track()
-    
+    tracker.write_results_csv()
