@@ -4,7 +4,7 @@ import cv2
 import sys, os
 import csv
 
-from homography import Homgraphy, load_i24_csv
+from homography import Homography, load_i24_csv
 
 
 
@@ -19,6 +19,7 @@ class MOT_Evaluator():
         """
         
         self.match_iou = 0.5
+        self.gt_mode = "im" # must be im, space or state - controls which to treat as the ground truth
         
         # store homography
         self.hg = homography
@@ -26,10 +27,10 @@ class MOT_Evaluator():
         # data is stored as a dictionary of lists - each key corresponds to one frame
         # and each list item corresponds to one object
         # load ground truth data
-        self.gt = load_i24_csv(gt_path)
+        self.gt = load_i24_csv(gt_path)[1:]
 
         # load pred data
-        self.pred = load_i24_csv(pred_path)
+        self.pred = load_i24_csv(pred_path)[1:]
         
         
         if params is not None:
@@ -38,7 +39,7 @@ class MOT_Evaluator():
                 
                 
     def evaluate(self):
-        
+        pass
         # for each frame:
         
         # compute matches based on space location ious
@@ -73,4 +74,10 @@ class MOT_Evaluator():
         
         
 
-        
+if __name__ == "__main__":
+    pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/p1c2_0_3D_track_outputs.csv"
+    gt_path = "/home/worklab/Data/dataset_alpha/manual_correction/rectified_p1c2_0_track_outputs_3D.csv"
+    
+    ev = MOT_Evaluator(gt_path,pred_path,None)
+    
+    
