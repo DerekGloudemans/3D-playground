@@ -145,6 +145,25 @@ class Homography():
                 "other":[18,6.5,5]
             }
         
+        self.class_dict = { "sedan":0,
+                    "midsize":1,
+                    "van":2,
+                    "pickup":3,
+                    "semi":4,
+                    "truck (other)":5,
+                    "truck": 5,
+                    "motorcycle":6,
+                    "trailer":7,
+                    0:"sedan",
+                    1:"midsize",
+                    2:"van",
+                    3:"pickup",
+                    4:"semi",
+                    5:"truck (other)",
+                    6:"motorcycle",
+                    7:"trailer"
+                    }
+        
         self.default_correspondence = None
     
     def add_i24_camera(self,point_path,vp_path,camera_name):
@@ -612,6 +631,8 @@ class Homography():
 def load_i24_csv(file):
         """
         Simple no-frills function to load data as currently formatted on the i24 project
+        labels - first row of string headers for data columns
+        data - dict of lists, one key per frame, one entry per frame object
         """
         short_name = file.split("/")[-1]
         HEADERS = True
@@ -631,7 +652,7 @@ def load_i24_csv(file):
             
             # pass header lines through as-is
             if HEADERS:
-                labels = row
+                headers = row
                 if len(row) > 0 and row[0] == "Frame #":
                     HEADERS = False
             
@@ -648,7 +669,7 @@ def load_i24_csv(file):
                     data[frame_idx].append(row)
                 
         
-        return labels,data
+        return headers,data
 
 # basic test code
 if __name__ == "__main__":

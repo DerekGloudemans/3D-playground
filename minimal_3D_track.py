@@ -361,7 +361,7 @@ class KIOU_Tracker():
             minx = torch.min(boxes[i,:,0])
             maxy = torch.max(boxes[i,:,1])
             
-            c1 = (int(minx),int(maxy))
+            c1 = (int(minx),int(maxy)) 
             c2 = int(c1[0] + t_size[0] + 10), int(c1[1] + len(full_label)*(t_size[1] +4)) 
             cv2.rectangle(im, c1, c2,(0,0,0), -1)
             
@@ -693,7 +693,7 @@ class KIOU_Tracker():
             fps_noload = frame_num / (time.time() - self.start_time - self.time_metrics["load"] - self.time_metrics["plot"])
             print("\rTracking frame {} of {} at {:.1f} FPS ({:.1f} FPS without loading and plotting)".format(frame_num,self.n_frames,fps,fps_noload), end = '\r', flush = True)
             
-            if frame_num > 10:
+            if frame_num > 1000:
                 break
             
         # clean up at the end
@@ -856,7 +856,7 @@ if __name__ == "__main__":
     
     
     #%% Set parameters
-    camera_name = "p1c4"
+    camera_name = "p1c2"
     s_idx = "0"
     
     vp_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp/{}_axes.csv".format(camera_name)
