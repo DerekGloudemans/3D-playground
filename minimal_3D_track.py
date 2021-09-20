@@ -770,7 +770,8 @@ class KIOU_Tracker():
             "veh center y",
             "theta",
             "width",
-            "length"
+            "length",
+            "height"
             ]
 
         
@@ -842,8 +843,9 @@ class KIOU_Tracker():
                         obj_line.append(state[6])
                         obj_line.append(state[0])
                         obj_line.append(state[1])
-                        obj_line.append(state[2])
+                        obj_line.append(np.pi/2.0 if state[5] == -1 else 0)
                         obj_line.append(state[3])
+                        obj_line.append(state[2])
                         obj_line.append(state[4])
 
                         out.writerow(obj_line)
@@ -856,7 +858,7 @@ if __name__ == "__main__":
     
     
     #%% Set parameters
-    camera_name = "p1c2"
+    camera_name = "p1c4"
     s_idx = "0"
     
     vp_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp/{}_axes.csv".format(camera_name)

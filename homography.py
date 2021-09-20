@@ -616,7 +616,10 @@ class Homography():
                 for b in range(a,len(bbox_3d)):
                     bb = bbox_3d[b]
                     if DRAW[a][b] == 1:
-                        im = cv2.line(im,(int(ab[0]),int(ab[1])),(int(bb[0]),int(bb[1])),color,thickness)
+                        try:
+                            im = cv2.line(im,(int(ab[0]),int(ab[1])),(int(bb[0]),int(bb[1])),color,thickness)
+                        except:
+                            pass
         
             if labels is not None:
                 label = labels[idx]

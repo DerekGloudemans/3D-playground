@@ -19,8 +19,9 @@ class MOT_Evaluator():
         params - dict of parameter values to change
         """
         
-        self.match_iou = 0.5
+        self.match_iou = 0
         self.cutoff_frame = 10000
+        self.sequence = None 
         
         self.gt_mode = "im" # must be im, space or state - controls which to treat as the ground truth
         
@@ -41,6 +42,9 @@ class MOT_Evaluator():
                 self.match_iou = params["match_iou"]
             if "cutoff_frame" in params.keys():
                 self.cutoff_frame = params["cutoff_frame"]
+            if "sequence" in params.keys():
+                self.sequence = params["sequence"]
+                
         
         # create dict for storing metrics
         n_classes = len(self.hg.class_heights.keys())
@@ -54,14 +58,59 @@ class MOT_Evaluator():
             "im_bot_err":[],
             "im_top_err":[],
             "cls":class_confusion_matrix,
+            "ids":{},
+            "gt_ids":[],
+            "pred_ids":[]
             }
-                
+        
+        if self.sequence is not None:
+            self.cap = cv2.VideoCapture(self.sequence)
+            
+    
+    def iou(self,a,b):
+        """
+        Description
+        -----------
+        Calculates intersection over union for all sets of boxes in a and b
+    
+        Parameters
+        ----------
+        a : tensor of size [batch_size,4] 
+            bounding boxes
+        b : tensor of size [batch_size,4]
+            bounding boxes.
+    
+        Returns
+        -------
+        iou - float between [0,1]
+            average iou for a and b
+        """
+        
+        area_a = (a[2]-a[0]) * (a[3]-a[1])
+        area_b = (b[2]-b[0]) * (b[3]-b[1])
+        
+        minx = max(a[0], b[0])
+        maxx = min(a[2], b[2])
+        miny = max(a[1], b[1])
+        maxy = min(a[3], b[3])
+        
+        intersection = max(0, maxx-minx) * max(0,maxy-miny)
+        union = area_a + area_b - intersection + 1e-06
+        iou = intersection/union
+        
+        return iou
+            
     def evaluate(self):
+        
+        frame_num = -1
         
         # for each frame:
         for f_idx in range(self.cutoff_frame):
             
-            print("Aggregating metrics for frame {}/{}".format(f_idx,cutoff_frame))
+            print("\rAggregating metrics for frame {}/{}".format(f_idx,self.cutoff_frame),end = "\r",flush = True)
+            
+            if self.sequence:
+                _,im = self.cap.read()
             
             gt = self.gt[f_idx]
             pred = self.pred[f_idx]
@@ -70,10 +119,13 @@ class MOT_Evaluator():
             gt_classes = []
             gt_ids = []
             gt_im = []
+            gt_velocities = []
             for box in gt:
                 gt_im.append(np.array(box[11:27]).astype(float))
                 gt_ids.append(int(box[2]))
                 gt_classes.append(box[3])
+                vel = float(box[38]) if len(box[38]) > 0 else 0
+                gt_velocities.append(vel)
             gt_im = torch.from_numpy(np.stack(gt_im)).reshape(-1,8,2)
             
             # two pass estimate of object heights
@@ -86,21 +138,32 @@ class MOT_Evaluator():
             gt_state = self.hg.im_to_state(gt_im,heights = refined_heights)
             gt_space = self.hg.state_to_space(gt_state)
             
+            gt_velocities = torch.tensor(gt_velocities).float()
+            gt_state = torch.cat((gt_state,gt_velocities.unsqueeze(1)),dim = 1)
             
             # store pred as tensors (we start from state)
             pred_classes = []
             pred_ids = []
             pred_state = []
             for box in pred:
-                pred_state.append(np.array([box[39],box[40],box[42],box[43],box[44],box[35],box[38]]).astype(float))
+                pred_state.append(np.array([box[39],box[40],box[43],box[42],box[44],box[35],box[38]]).astype(float))
                 pred_ids.append(int(box[2]))
                 pred_classes.append(box[3])
             
-            pred_state = torch.from_numpy(np.stack(pred_state)).reshape(-1,7)
+            pred_state = torch.from_numpy(np.stack(pred_state)).reshape(-1,7).float()
             pred_space = self.hg.state_to_space(pred_state)
             pred_im = self.hg.state_to_im(pred_state)
-            pass
             
+            
+            # plot
+            if self.sequence:
+                #plot gt
+                self.hg.plot_boxes(im, pred_im, color = (0,0,255), labels = pred_ids)
+                self.hg.plot_boxes(im, gt_im,color = (0,255,0),labels = gt_ids)
+                cv2.imshow("frame",im)
+                cv2.waitKey(100)
+                
+                
         
             # compute matches based on space location ious
             first = gt_space.clone()
@@ -121,16 +184,16 @@ class MOT_Evaluator():
         
             
             # find distances between first and second
-            dist = np.zeros([len(first),len(second)])
+            ious = np.zeros([len(first),len(second)])
             for i in range(0,len(first)):
                 for j in range(0,len(second)):
-                    dist[i,j] = 1 - self.iou(first[i],second[j].data.numpy())
+                    ious[i,j] =  self.iou(first[i],second[j].data.numpy())
                     
             # get matches and keep those above threshold
-            a, b = linear_sum_assignment(dist)
+            a, b = linear_sum_assignment(ious,maximize = True)
             matches = []
             for i in range(len(a)):
-                iou = 1 - dist[a[i],b[i]]
+                iou = ious[a[i],b[i]]
                 if iou >= self.match_iou:
                     matches.append([a[i],b[i]])
                     self.m["match_IOU"].append(iou)
@@ -140,15 +203,17 @@ class MOT_Evaluator():
             self.m["FP"] = max(0,(len(pred_state) - len(matches)))
             self.m["FN"] = max(0,(len(gt_state) - len(matches)))
             
-            # for each match, store error in L,W,H,x,y,velocity
-            state_err = torch.abs(pred_state - gt_state)
-            self.m["state_err"].append(state_err)
             
-            # for each match, store absolute 3D bbox pixel error for top and bottom
-            bot_err = torch.mean(torch.abs(pred_im[:,4:8,:] - gt_im[:,:4,:]))
-            top_err = torch.mean(torch.abs(pred_im[:,4:8,:] - gt_im[:,:4,:]))
-            self.m["im_bot_err"].append(bot_err)
-            self.m["im_top_err"].append(top_err)
+            for match in matches:
+                # for each match, store error in L,W,H,x,y,velocity
+                state_err = torch.abs(pred_state[match[1]] - gt_state[match[0]])
+                self.m["state_err"].append(state_err)
+            
+                # for each match, store absolute 3D bbox pixel error for top and bottom
+                bot_err = torch.mean(torch.sqrt(torch.sum(torch.pow(pred_im[match[1],0:4,:] - gt_im[match[0],0:4,:],2),dim = 1)))
+                top_err = torch.mean(torch.sqrt(torch.sum(torch.pow(pred_im[match[1],4:8,:] - gt_im[match[0],4:8,:],2),dim = 1)))
+                self.m["im_bot_err"].append(bot_err)
+                self.m["im_top_err"].append(top_err)
             
             # for each match, store whether the class was predicted correctly or incorrectly, on a per class basis
             # index matrix by [true class,pred class]
@@ -169,31 +234,108 @@ class MOT_Evaluator():
                         self.m["ids"][gt_id].append(pred_id)
                 except KeyError:
                     self.m["ids"][gt_id] = [pred_id]
+                    
+                if pred_id not in self.m["pred_ids"]:
+                    self.m["pred_ids"].append(pred_id)
+                if gt_id not in self.m["gt_ids"]:
+                    self.m["gt_ids"].append(gt_id)    
         
-        
+        if self.sequence:
+            self.cap.release()
+            cv2.destroyAllWindows()
         
         # at the end:
+        metrics = {}
+        metrics["iou_threshold"] = self.match_iou
+        metrics["True unique objects"] = len(self.m["gt_ids"])
+        metrics["Predicted unique objects"] = len(self.m["pred_ids"])
+        metrics["TP"] = self.m["TP"]
+        metrics["FP"] = self.m["FP"]
+        metrics["FN"] = self.m["FN"]
         
         # Compute detection recall, detection precision, detection False alarm rate
-
+        metrics["Detector Recall"] = self.m["TP"]/(self.m["TP"]+self.m["FN"])
+        metrics["Detector Precision"] = self.m["TP"]/(self.m["TP"]+self.m["FP"])
+        metrics["False Alarm Rate"] = self.m["FP"]/self.m["TP"]
         # Compute fragmentations - # of IDs assocated with each GT
-
-        # Count ID switches - any time an ID appears in two GT object sets
-
+        metrics["Fragmentations"] = sum([len(self.m["ids"][key])-1 for key in self.m["ids"]])
+        
+        # Count ID switches - any time a pred ID appears in two GT object sets
+        count = 0
+        for pred_id in self.m["pred_ids"]:
+            pred_id_count = 0
+            for gt_id in self.m["ids"]:
+                if pred_id in self.m["ids"][gt_id]:
+                    pred_id_count += 1
+                    
+            if pred_id_count > 1:
+                count += (pred_id_count -1) # penalize for more than one gt being matches to the same pred_id
+        metrics["ID switches"] = count
+        
         # Compute MOTA
-
+        metrics["MOTA"] = 1 - (self.m["FN"] +  metrics["ID switches"] + self.m["FP"])/(self.m["TP"])
+    
         # Compute average detection metrics in various spaces
+        ious = np.array(self.m["match_IOU"])
+        iou_mean_stddev = np.mean(ious),np.std(ious)
         
+        state = torch.stack(self.m["state_err"])
+        state_mean_stddev = torch.mean(state,dim = 0), torch.std(state,dim = 0)
         
+        bot_err = torch.stack(self.m["im_bot_err"])
+        bot_mean_stddev = torch.mean(bot_err),torch.std(bot_err)
+        
+        top_err = torch.stack(self.m["im_top_err"])
+        top_mean_stddev = torch.mean(top_err),torch.std(top_err)
+        
+        metrics["Match IOU"]           = iou_mean_stddev
+        metrics["Width precision"]     = state_mean_stddev[0][3],state_mean_stddev[1][3]
+        metrics["Height precision"]    = state_mean_stddev[0][4],state_mean_stddev[1][4]
+        metrics["Length precision"]    = state_mean_stddev[0][2],state_mean_stddev[1][2]
+        metrics["Velocity precision"]  = state_mean_stddev[0][6],state_mean_stddev[1][6]
+        metrics["X precision"]         = state_mean_stddev[0][0],state_mean_stddev[1][0]
+        metrics["Y precision"]         = state_mean_stddev[0][1],state_mean_stddev[1][1]
+        metrics["Bottom im precision"] = bot_mean_stddev
+        metrics["Top im precision"]    = top_mean_stddev
+        
+        self.metrics = metrics
+        print("\n")
+        self.print_metrics()
+        
+    def print_metrics(self):
+        
+        units = {}
+        units["Match IOU"]           = ""
+        units["Width precision"]     = "ft"
+        units["Height precision"]    = "ft"
+        units["Length precision"]    = "ft"
+        units["Velocity precision"]  = "ft/s"
+        units["X precision"]         = "ft"
+        units["Y precision"]         = "ft"
+        units["Bottom im precision"] = "px"
+        units["Top im precision"]    = "px"
+        
+        for name in self.metrics:
+            try: 
+                unit = units[name]
+                print("{:<30}: {:.2f}{} avg., {:.2f}{} st.dev.".format(name,self.metrics[name][0],unit,self.metrics[name][1],unit))
+            except:
+                print("{:<30}: {:.3f}".format(name,self.metrics[name]))
+            
+    
 
 if __name__ == "__main__":
     
-    camera_name = "p1c2"
+    camera_name = "p1c4"
     sequence_idx = 0
     pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/{}_{}_3D_track_outputs.csv".format(camera_name,sequence_idx)
     gt_path = "/home/worklab/Data/dataset_alpha/manual_correction/rectified_{}_{}_track_outputs_3D.csv".format(camera_name,sequence_idx)
+    
     vp_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp/{}_axes.csv".format(camera_name)
     point_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform/{}_im_lmcs_transform_points.csv".format(camera_name)
+    
+    sequence =     sequence = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/{}_{}.mp4".format(camera_name,sequence_idx)
+
     
     # we have to define the scale factor for the transformation, which we do based on the first frame of data
     labels,data = load_i24_csv(gt_path)
@@ -214,6 +356,12 @@ if __name__ == "__main__":
     heights = hg.guess_heights(classes)
     hg.scale_Z(boxes,heights,name = camera_name)
     
-    ev = MOT_Evaluator(gt_path,pred_path,hg)
+    params = {
+        "cutoff_frame": 1000,
+        "match_iou":0.9,
+        "sequence":sequence
+        }
+    
+    ev = MOT_Evaluator(gt_path,pred_path,hg,params = params)
     ev.evaluate()
     
