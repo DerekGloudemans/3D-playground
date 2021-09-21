@@ -288,7 +288,7 @@ class KIOU_Tracker():
         return iou
 
     # TODO - rewrite for 3D boxes
-    def plot(self,im,detections,post_locations,all_classes,frame = None,pre_locations = None,label_len = 1):
+    def plot(self,im,detections,post_locations,all_classes,frame = None,pre_locations = None,label_len = 1,single_box = True):
         """
         Description
         -----------
@@ -313,11 +313,12 @@ class KIOU_Tracker():
             If not none, the resulting image will be saved with this frame number in file name.
             The default is None.
         """
+        tn = 2
         
         im = im.copy()/255.0
     
         # plot detection bboxes
-        if len(detections) > 0:
+        if len(detections) > 0 and not single_box:
             im = self.hg.plot_boxes(im, self.hg.state_to_im(detections))
           
         ids = []
@@ -338,7 +339,9 @@ class KIOU_Tracker():
         if len(boxes) > 0:
             boxes = torch.from_numpy(np.stack(boxes))
             boxes = self.hg.state_to_im(boxes)
-            im = self.hg.plot_boxes(im,boxes,color = (255,0,0))
+            im = self.hg.plot_boxes(im,boxes,color = (0.6,0.8,0),thickness = tn)
+        
+        im2 = im.copy()
         
         for i in range(len(boxes)):
             # plot label
@@ -363,15 +366,17 @@ class KIOU_Tracker():
             
             c1 = (int(minx),int(maxy)) 
             c2 = int(c1[0] + t_size[0] + 10), int(c1[1] + len(full_label)*(t_size[1] +4)) 
-            cv2.rectangle(im, c1, c2,(0,0,0), -1)
+            cv2.rectangle(im2, c1, c2,(1,1,1), -1)
             
             offset = t_size[1] + 4
             for label in full_label:
                 
                 c1 = c1[0],c1[1] + offset
-                cv2.putText(im, label, c1, cv2.FONT_HERSHEY_PLAIN,text_size, [225,255,255], 1)
+                cv2.putText(im, label, c1, cv2.FONT_HERSHEY_PLAIN,text_size, [0,0,0], 1)
+                cv2.putText(im2, label, c1, cv2.FONT_HERSHEY_PLAIN,text_size, [0,0,0], 1)
         
-        if pre_locations is not None and len(pre_locations) > 0:
+        im = cv2.addWeighted(im,0.7,im2,0.3,0)
+        if pre_locations is not None and len(pre_locations) > 0 and not single_box:
             
             # pre_boxes = []
             # for id in pre_locations:
@@ -693,7 +698,7 @@ class KIOU_Tracker():
             fps_noload = frame_num / (time.time() - self.start_time - self.time_metrics["load"] - self.time_metrics["plot"])
             print("\rTracking frame {} of {} at {:.1f} FPS ({:.1f} FPS without loading and plotting)".format(frame_num,self.n_frames,fps,fps_noload), end = '\r', flush = True)
             
-            if frame_num > 1000:
+            if frame_num > 10000:
                 break
             
         # clean up at the end
@@ -722,7 +727,11 @@ class KIOU_Tracker():
         with open("/home/worklab/Documents/derek/3D-playground/final_saved_alpha_timestamps.cpkl","rb") as f:
             ts = pickle.load(f)
         
-        self.timestamps = ts[self.sequence.split("/")[-1].split(".mp4")[0] + "_4k"]
+        try:
+            self.timestamps = ts[self.sequence.split("/")[-1].split(".mp4")[0] + "_4k"]
+        except:
+            self.timestamps = [idx/30.0 for idx in range(10000)]
+            
         camera = re.search("p\dc\d",self.sequence).group(0)
         
         # create main data header
@@ -851,135 +860,162 @@ class KIOU_Tracker():
                         out.writerow(obj_line)
         # end file writing
         
-                
+def im_to_vid(directory,name = "video"): 
+    img_array = []
+    all_files = os.listdir(directory)
+    all_files.sort()
+    for filename in all_files:
+        filename = os.path.join(directory, filename)
+        img = cv2.imread(filename)
+        height, width, layers = img.shape
+        size = (width,height)
+        img_array.append(img)
+     
+     
+    out = cv2.VideoWriter(os.path.join("/home/worklab/Desktop",'{}.mp4'.format(name)),cv2.VideoWriter_fourcc(*'MPEG'), 30, size)
+     
+    for i in range(len(img_array)):
+        out.write(img_array[i])
+    out.release()                
         
         
 if __name__ == "__main__":
     
     
     #%% Set parameters
-    camera_name = "p1c4"
-    s_idx = "0"
-    
-    vp_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp/{}_axes.csv".format(camera_name)
-    point_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform/{}_im_lmcs_transform_points.csv".format(camera_name)
-    sequence = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/{}_{}.mp4".format(camera_name,s_idx)
-    
-    det_cp = "/home/worklab/Documents/derek/3D-playground/cpu_15000gt_3D.pt"
-    kf_param_path = None #"util_track/kf_params_6D.cpkl"
-    
-    
-    use_cuda = torch.cuda.is_available()
-    device = torch.device("cuda:0" if use_cuda else "cpu")
-    
-    
-    class_dict = { "sedan":0,
-                    "midsize":1,
-                    "van":2,
-                    "pickup":3,
-                    "semi":4,
-                    "truck (other)":5,
-                    "truck": 5,
-                    "motorcycle":6,
-                    "trailer":7,
-                    0:"sedan",
-                    1:"midsize",
-                    2:"van",
-                    3:"pickup",
-                    4:"semi",
-                    5:"truck (other)",
-                    6:"motorcycle",
-                    7:"trailer"
-                    }
-    
-    #%% Load necessary files
+    for camera_name in ["p1c1","p1c2","p1c3","p1c4","p1c5","p1c6"]:
 
-    # get some data for fitting P
-    data_file = "/home/worklab/Data/dataset_alpha/manual_correction/rectified_{}_0_track_outputs_3D.csv".format(camera_name)
-    labels,data = load_i24_csv(data_file)
-    frame_data = data[0]
-    # convert labels from first frame into tensor form
-    boxes = []
-    classes = []
-    for item in frame_data:
-        if len(item[11]) > 0:
-            boxes.append(np.array(item[11:27]).astype(float))
-            classes.append(item[3])
-    boxes = torch.from_numpy(np.stack(boxes))
-    boxes = torch.stack((boxes[:,::2],boxes[:,1::2]),dim = -1)
+        #camera_name = "p1c4"
+        s_idx = "0"
+        
+        vp_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp/{}_axes.csv".format(camera_name)
+        point_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform/{}_im_lmcs_transform_points.csv".format(camera_name)
+        #sequence = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/{}_{}.mp4".format(camera_name,s_idx)
+        sequence = "/home/worklab/Data/cv/video/08_06_2021/record_51_{}_00000.mp4".format(camera_name)
     
-    #%% Set up filter, detector, etc.
-    
-    # load homography
-    hg = Homography()
-    hg.add_i24_camera(point_file,vp_file,camera_name)
-    heights = hg.guess_heights(classes)
-    hg.scale_Z(boxes,heights,name = camera_name)
-    
-    
-    # load detector
-    detector = resnet50(8)
-    detector.load_state_dict(torch.load(det_cp))
-    detector = detector.to(device)
-    
-    # set up filter params
-    
-    if kf_param_path is not None:
-        with open(kf_param_path ,"rb") as f:
-            kf_params = pickle.load(f)
-                     
-    
-    else: # set up kf - we assume measurements will simply be given in state formulation x,y,l,w,h,x_dot
-        kf = Torch_KF(torch.device("cpu"))
-        kf.F = torch.eye(6)
-        kf.F[0,5] = np.nan
         
         
-        kf.H = torch.tensor([
-            [1,0,0,0,0,0],
-            [0,1,0,0,0,0],
-            [0,0,1,0,0,0],
-            [0,0,0,1,0,0],
-            [0,0,0,0,1,0]
-            ])
-    
-        kf.P = torch.tensor([
-            [10,0,0,0,0,0],
-            [0,100,0,0,0,0],
-            [0,0,100,0,0,0],
-            [0,0,0,100 ,0,0],
-            [0,0,0,0,100,0],
-            [0,0,0,0,0,10000]
-            ])
-    
-        kf.Q = torch.eye(6) 
-        kf.R = torch.eye(5) 
-        kf.mu_R = torch.zeros(5)
-        kf.mu_Q = torch.zeros(6)
+        det_cp = "/home/worklab/Documents/derek/3D-playground/cpu_15000gt_3D.pt"
+        kf_param_path = None #"util_track/kf_params_6D.cpkl"
         
-        R3 = torch.eye(3) *5
-        mu_R3 = torch.zeros(3)
-        H3 = torch.tensor([
-            [0,0,1,0,0,0],
-            [0,0,0,1,0,0],
-            [0,0,0,0,1,0]
-            ])
         
-        kf_params = {
-            "mu_Q":kf.mu_Q,
-            "mu_R":kf.mu_R,
-            "F":kf.F,
-            "H":kf.H,
-            "P":kf.P,
-            "Q":kf.Q,
-            "R":kf.R,
-            "R3":R3,
-            "mu_R3":mu_R3,
-            "H3":H3
-            }
+        use_cuda = torch.cuda.is_available()
+        device = torch.device("cuda:0" if use_cuda else "cpu")
         
+        
+        class_dict = { "sedan":0,
+                        "midsize":1,
+                        "van":2,
+                        "pickup":3,
+                        "semi":4,
+                        "truck (other)":5,
+                        "truck": 5,
+                        "motorcycle":6,
+                        "trailer":7,
+                        0:"sedan",
+                        1:"midsize",
+                        2:"van",
+                        3:"pickup",
+                        4:"semi",
+                        5:"truck (other)",
+                        6:"motorcycle",
+                        7:"trailer"
+                        }
+        
+        #%% Load necessary files
     
-    #%% Run tracker
-    tracker = KIOU_Tracker(sequence,detector,kf_params,hg,class_dict, OUT = "track_ims")
-    tracker.track()
-    tracker.write_results_csv()
+        # get some data for fitting P
+        data_file = "/home/worklab/Data/dataset_alpha/manual_correction/rectified_{}_0_track_outputs_3D.csv".format(camera_name)
+        labels,data = load_i24_csv(data_file)
+        frame_data = data[0]
+        # convert labels from first frame into tensor form
+        boxes = []
+        classes = []
+        for item in frame_data:
+            if len(item[11]) > 0:
+                boxes.append(np.array(item[11:27]).astype(float))
+                classes.append(item[3])
+        boxes = torch.from_numpy(np.stack(boxes))
+        boxes = torch.stack((boxes[:,::2],boxes[:,1::2]),dim = -1)
+        
+        #%% Set up filter, detector, etc.
+        
+        # load homography
+        hg = Homography()
+        hg.add_i24_camera(point_file,vp_file,camera_name)
+        heights = hg.guess_heights(classes)
+        hg.scale_Z(boxes,heights,name = camera_name)
+        
+        
+        # load detector
+        detector = resnet50(8)
+        detector.load_state_dict(torch.load(det_cp))
+        detector = detector.to(device)
+        
+        # set up filter params
+        
+        if kf_param_path is not None:
+            with open(kf_param_path ,"rb") as f:
+                kf_params = pickle.load(f)
+                         
+        
+        else: # set up kf - we assume measurements will simply be given in state formulation x,y,l,w,h
+            kf = Torch_KF(torch.device("cpu"))
+            kf.F = torch.eye(6)
+            kf.F[0,5] = np.nan
+            
+            
+            kf.H = torch.tensor([
+                [1,0,0,0,0,0],
+                [0,1,0,0,0,0],
+                [0,0,1,0,0,0],
+                [0,0,0,1,0,0],
+                [0,0,0,0,1,0]
+                ])
+        
+            kf.P = torch.tensor([
+                [10,0,0,0,0,0],
+                [0,100,0,0,0,0],
+                [0,0,100,0,0,0],
+                [0,0,0,100 ,0,0],
+                [0,0,0,0,100,0],
+                [0,0,0,0,0,10000]
+                ])
+        
+            kf.Q = torch.eye(6) 
+            kf.R = torch.eye(5) 
+            kf.mu_R = torch.zeros(5)
+            kf.mu_Q = torch.zeros(6)
+            
+            R3 = torch.eye(3) *5
+            mu_R3 = torch.zeros(3)
+            H3 = torch.tensor([
+                [0,0,1,0,0,0],
+                [0,0,0,1,0,0],
+                [0,0,0,0,1,0]
+                ])
+            
+            kf_params = {
+                "mu_Q":kf.mu_Q,
+                "mu_R":kf.mu_R,
+                "F":kf.F,
+                "H":kf.H,
+                "P":kf.P,
+                "Q":kf.Q,
+                "R":kf.R,
+                "R3":R3,
+                "mu_R3":mu_R3,
+                "H3":H3
+                }
+            
+        
+        #%% Run tracker
+        OUT = "track_ims"
+        tracker = KIOU_Tracker(sequence,detector,kf_params,hg,class_dict, OUT = OUT)
+        tracker.track()
+        tracker.write_results_csv()
+        
+        if True:
+            im_to_vid("track_ims",name = sequence.split("/")[-1].split(".")[0])
+            for f in os.listdir(OUT):
+                os.remove(os.path.join(OUT, f))

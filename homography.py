@@ -584,7 +584,7 @@ class Homography():
         
         
 
-    def plot_boxes(self,im,boxes,color = (255,255,255),labels = None):
+    def plot_boxes(self,im,boxes,color = (255,255,255),labels = None,thickness = 1):
         """
         As one might expect, plots 3D boxes on input image
         
@@ -592,9 +592,7 @@ class Homography():
         boxes - [d,8,2] array of image points where d indexes objects
         color - 3-tuple specifying box color to plot
         """
-        
-        thickness = 1
-        
+                
         DRAW = [[0,1,1,0,1,0,0,0], #bfl
                 [0,0,0,1,0,1,0,0], #bfr
                 [0,0,0,1,0,0,1,1], #bbl

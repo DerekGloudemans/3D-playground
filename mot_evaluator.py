@@ -53,6 +53,7 @@ class MOT_Evaluator():
             "FP":0,
             "FN":0,
             "TP":0,
+            "pre_thresh_IOU":[],
             "match_IOU":[],
             "state_err":[],
             "im_bot_err":[],
@@ -112,9 +113,20 @@ class MOT_Evaluator():
             if self.sequence:
                 _,im = self.cap.read()
             
-            gt = self.gt[f_idx]
-            pred = self.pred[f_idx]
+            try:
+                gt = self.gt[f_idx]
+            except KeyError:
+                if f_idx in self.pred.keys():
+                    self.m["FP"] += len(self.pred[f_idx])
+                continue
             
+            try:
+                pred = self.pred[f_idx]
+            except KeyError:
+                if f_idx in self.gt.keys():
+                    self.m["FN"] += len(self.gt[f_idx])
+                continue
+                    
             # store ground truth as tensors
             gt_classes = []
             gt_ids = []
@@ -126,6 +138,7 @@ class MOT_Evaluator():
                 gt_classes.append(box[3])
                 vel = float(box[38]) if len(box[38]) > 0 else 0
                 gt_velocities.append(vel)
+                
             gt_im = torch.from_numpy(np.stack(gt_im)).reshape(-1,8,2)
             
             # two pass estimate of object heights
@@ -156,12 +169,12 @@ class MOT_Evaluator():
             
             
             # plot
-            if self.sequence:
+            if True and self.sequence:
                 #plot gt
                 self.hg.plot_boxes(im, pred_im, color = (0,0,255), labels = pred_ids)
                 self.hg.plot_boxes(im, gt_im,color = (0,255,0),labels = gt_ids)
                 cv2.imshow("frame",im)
-                cv2.waitKey(100)
+                cv2.waitKey(1)
                 
                 
         
@@ -194,21 +207,22 @@ class MOT_Evaluator():
             matches = []
             for i in range(len(a)):
                 iou = ious[a[i],b[i]]
+                self.m["pre_thresh_IOU"].append(iou)
                 if iou >= self.match_iou:
                     matches.append([a[i],b[i]])
                     self.m["match_IOU"].append(iou)
             
             # count FP, FN, TP
             self.m["TP"] += len(matches)
-            self.m["FP"] = max(0,(len(pred_state) - len(matches)))
-            self.m["FN"] = max(0,(len(gt_state) - len(matches)))
+            self.m["FP"] += max(0,(len(pred_state) - len(matches)))
+            self.m["FN"] += max(0,(len(gt_state) - len(matches)))
             
             
             for match in matches:
                 # for each match, store error in L,W,H,x,y,velocity
                 state_err = torch.abs(pred_state[match[1]] - gt_state[match[0]])
                 self.m["state_err"].append(state_err)
-            
+                
                 # for each match, store absolute 3D bbox pixel error for top and bottom
                 bot_err = torch.mean(torch.sqrt(torch.sum(torch.pow(pred_im[match[1],0:4,:] - gt_im[match[0],0:4,:],2),dim = 1)))
                 top_err = torch.mean(torch.sqrt(torch.sum(torch.pow(pred_im[match[1],4:8,:] - gt_im[match[0],4:8,:],2),dim = 1)))
@@ -269,7 +283,7 @@ class MOT_Evaluator():
                     pred_id_count += 1
                     
             if pred_id_count > 1:
-                count += (pred_id_count -1) # penalize for more than one gt being matches to the same pred_id
+                count += (pred_id_count -1) # penalize for more than one gt being matched to the same pred_id
         metrics["ID switches"] = count
         
         # Compute MOTA
@@ -278,6 +292,9 @@ class MOT_Evaluator():
         # Compute average detection metrics in various spaces
         ious = np.array(self.m["match_IOU"])
         iou_mean_stddev = np.mean(ious),np.std(ious)
+        
+        pre_ious = np.array(self.m["pre_thresh_IOU"])
+        pre_iou_mean_stddev = np.mean(pre_ious),np.std(pre_ious)
         
         state = torch.stack(self.m["state_err"])
         state_mean_stddev = torch.mean(state,dim = 0), torch.std(state,dim = 0)
@@ -288,6 +305,7 @@ class MOT_Evaluator():
         top_err = torch.stack(self.m["im_top_err"])
         top_mean_stddev = torch.mean(top_err),torch.std(top_err)
         
+        metrics["Pre-threshold IOU"]   = pre_iou_mean_stddev
         metrics["Match IOU"]           = iou_mean_stddev
         metrics["Width precision"]     = state_mean_stddev[0][3],state_mean_stddev[1][3]
         metrics["Height precision"]    = state_mean_stddev[0][4],state_mean_stddev[1][4]
@@ -306,6 +324,7 @@ class MOT_Evaluator():
         
         units = {}
         units["Match IOU"]           = ""
+        units["Pre-threshold IOU"]   = ""
         units["Width precision"]     = "ft"
         units["Height precision"]    = "ft"
         units["Length precision"]    = "ft"
@@ -326,7 +345,7 @@ class MOT_Evaluator():
 
 if __name__ == "__main__":
     
-    camera_name = "p1c4"
+    camera_name = "p1c2"
     sequence_idx = 0
     pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/{}_{}_3D_track_outputs.csv".format(camera_name,sequence_idx)
     gt_path = "/home/worklab/Data/dataset_alpha/manual_correction/rectified_{}_{}_track_outputs_3D.csv".format(camera_name,sequence_idx)
@@ -358,7 +377,7 @@ if __name__ == "__main__":
     
     params = {
         "cutoff_frame": 1000,
-        "match_iou":0.9,
+        "match_iou":0.5,
         "sequence":sequence
         }
     
