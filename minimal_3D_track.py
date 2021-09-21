@@ -37,7 +37,7 @@ class KIOU_Tracker():
                  fsld_max = 3,
                  matching_cutoff = 0.95,
                  iou_cutoff = 0.1,
-                 det_conf_cutoff = 0.5,
+                 det_conf_cutoff = 0.3,
                  PLOT = True,
                  OUT = None,
                  downsample = 1,
@@ -206,7 +206,7 @@ class KIOU_Tracker():
         # 4. Remove lost objects
         removals = []
         for id in pre_ids:
-            if self.fsld[id] >= self.fsld_max:
+            if self.fsld[id] >= self.fsld_max and len(self.all_classes[id] < self.fsld_max + 2):  # after a burn-in period, objects are no longer removed unless they leave frame
                 removals.append(id)
                 self.fsld.pop(id,None) # remove key from fsld
         if len(removals) > 0:
@@ -238,18 +238,35 @@ class KIOU_Tracker():
             removals = list(set(removals))
             self.filter.remove(removals)
    
-    # TODO - rewrite for new state formulation
-    def remove_anomalies(self,max_scale= 400):
+    def remove_anomalies(self,max_sizes = [75,16,20]):
         """
         Removes all objects with negative size or size greater than max_size
         """
         removals = []
-        locations = self.filter.objs()
-        for i in locations:
-            if (locations[i][2]-locations[i][0]) > max_scale or (locations[i][2]-locations[i][0]) < 0:
+        objs = self.filter.objs(with_direction = True)
+        for i in objs:
+            obj = objs[i]
+            if obj[1] > 120 or obj [1] < -10:
                 removals.append(i)
-            elif (locations[i][3] - locations[i][1]) > max_scale or (locations [i][3] - locations[i][1]) < 0:
+            elif obj[2] > max_sizes[0] or obj[2] < 0 or obj[3] > max_sizes[1] or obj[3] < 0 or obj[4] > max_sizes[2] or obj[4] < 0:
                 removals.append(i)
+            elif obj[5] > 150 or obj[5] < -150:
+                removals.append(i)      
+        
+        # remove boxes outside of frame
+        keys = list(objs.keys())
+        objs_new = [objs[id] for id in keys]
+        objs_new = torch.from_numpy(np.stack(objs_new))
+        objs_new = self.hg.state_to_im(objs_new)
+        
+        for i in range(len(keys)):
+            obj = objs_new[i]
+            if obj[0,0] < 0 and obj[2,0] < 0 or obj[0,0] > 1920 and obj[2,0] > 1920:
+                removals.append(keys[i])
+            if obj[0,1] < 0 and obj[2,1] < 0 or obj[0,1] > 1080 and obj[2,1] > 1080:
+                removals.append(keys[i])
+                
+        removals = list(set(removals))
         self.filter.remove(removals)         
     
     
@@ -460,7 +477,7 @@ class KIOU_Tracker():
         
         return boxes, labels, scores
 
-    def im_nms(self,detections,scores,threshold = 0.5):
+    def im_nms(self,detections,scores,threshold = 0.8):
         """
         Performs non-maximal supression on boxes given in image formulation
         detections - [d,8,2] array of boxes in state formulation
@@ -685,8 +702,8 @@ class KIOU_Tracker():
                 self.manage_tracks(detections,matchings,pre_ids,labels,scores)
         
                 # remove overlapping objects and anomalies
-                self.remove_overlaps()
-                #self.remove_anomalies()
+                #self.remove_overlaps()
+                self.remove_anomalies()
                 
                 # tweak sizes to better match canonical class sizes
                 self.tweak_sizes()
@@ -722,7 +739,7 @@ class KIOU_Tracker():
             fps_noload = frame_num / (time.time() - self.start_time - self.time_metrics["load"] - self.time_metrics["plot"])
             print("\rTracking frame {} of {} at {:.1f} FPS ({:.1f} FPS without loading and plotting)".format(frame_num,self.n_frames,fps,fps_noload), end = '\r', flush = True)
             
-            if frame_num > 10000:
+            if frame_num > 1000:
                 break
             
         # clean up at the end
@@ -817,6 +834,9 @@ class KIOU_Tracker():
             out.writerow(data_header)
             
             for frame in range(self.n_frames):
+                print("\n")
+                print("\rWriting outputs for frame {} of {}".format(frame_num,self.n_frames), end = '\r', flush = True)
+
                 try:
                     timestamp = self.timestamps[frame]
                 except:
@@ -831,57 +851,59 @@ class KIOU_Tracker():
                 gen = "3D Detector"
                 
                 for id in self.all_tracks:
-                    state = self.all_tracks[id][frame]
-                    state = torch.from_numpy(state).float()
-                    
-                    if state[0] != 0:
+                    if len(self.all_classes[id]) > self.fsld_max + 2: # remove short anomalous tracks
                         
-                        # generate space coords
-                        space = self.hg.state_to_space(state.unsqueeze(0))
-                        space = space.squeeze(0)[:4,:2]
-                        flat_space = list(space.reshape(-1).data.numpy())
+                        state = self.all_tracks[id][frame]
+                        state = torch.from_numpy(state).float()
                         
-                        # generate im coords
-                        bbox_3D = self.hg.state_to_im(state.unsqueeze(0))
-                        flat_3D = list(bbox_3D.squeeze(0).reshape(-1).data.numpy())
-                        
-                        # generate im 2D bbox
-                        minx = torch.min(bbox_3D[:,:,0],dim = 1)[0].item()
-                        maxx = torch.max(bbox_3D[:,:,0],dim = 1)[0].item()
-                        miny = torch.min(bbox_3D[:,:,1],dim = 1)[0].item()
-                        maxy = torch.max(bbox_3D[:,:,1],dim = 1)[0].item()
-                        
-                        
-                        obj_line = []
-                        
-                        obj_line.append(frame)
-                        obj_line.append(timestamp)
-                        obj_line.append(id)
-                        obj_line.append(self.class_dict[np.argmax(self.all_classes[id])])
-                        obj_line.append(minx)
-                        obj_line.append(miny)
-                        obj_line.append(maxx)
-                        obj_line.append(maxy)
-                        obj_line.append(0)
-                        obj_line.append(0)
-
-                        obj_line.append(gen)
-                        obj_line = obj_line + flat_3D + flat_space 
-                        state = state.data.numpy()
-                        obj_line.append(state[5])
-                        
-                        obj_line.append(camera)
-                        
-                        obj_line.append(0) # acceleration = 0 assumption
-                        obj_line.append(state[6])
-                        obj_line.append(state[0])
-                        obj_line.append(state[1])
-                        obj_line.append(np.pi/2.0 if state[5] == -1 else 0)
-                        obj_line.append(state[3])
-                        obj_line.append(state[2])
-                        obj_line.append(state[4])
-
-                        out.writerow(obj_line)
+                        if state[0] != 0:
+                            
+                            # generate space coords
+                            space = self.hg.state_to_space(state.unsqueeze(0))
+                            space = space.squeeze(0)[:4,:2]
+                            flat_space = list(space.reshape(-1).data.numpy())
+                            
+                            # generate im coords
+                            bbox_3D = self.hg.state_to_im(state.unsqueeze(0))
+                            flat_3D = list(bbox_3D.squeeze(0).reshape(-1).data.numpy())
+                            
+                            # generate im 2D bbox
+                            minx = torch.min(bbox_3D[:,:,0],dim = 1)[0].item()
+                            maxx = torch.max(bbox_3D[:,:,0],dim = 1)[0].item()
+                            miny = torch.min(bbox_3D[:,:,1],dim = 1)[0].item()
+                            maxy = torch.max(bbox_3D[:,:,1],dim = 1)[0].item()
+                            
+                            
+                            obj_line = []
+                            
+                            obj_line.append(frame)
+                            obj_line.append(timestamp)
+                            obj_line.append(id)
+                            obj_line.append(self.class_dict[np.argmax(self.all_classes[id])])
+                            obj_line.append(minx)
+                            obj_line.append(miny)
+                            obj_line.append(maxx)
+                            obj_line.append(maxy)
+                            obj_line.append(0)
+                            obj_line.append(0)
+    
+                            obj_line.append(gen)
+                            obj_line = obj_line + flat_3D + flat_space 
+                            state = state.data.numpy()
+                            obj_line.append(state[5])
+                            
+                            obj_line.append(camera)
+                            
+                            obj_line.append(0) # acceleration = 0 assumption
+                            obj_line.append(state[6])
+                            obj_line.append(state[0])
+                            obj_line.append(state[1])
+                            obj_line.append(np.pi/2.0 if state[5] == -1 else 0)
+                            obj_line.append(state[3])
+                            obj_line.append(state[2])
+                            obj_line.append(state[4])
+    
+                            out.writerow(obj_line)
         # end file writing
         
 def im_to_vid(directory,name = "video"): 
@@ -914,8 +936,8 @@ if __name__ == "__main__":
         
         vp_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp/{}_axes.csv".format(camera_name)
         point_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform/{}_im_lmcs_transform_points.csv".format(camera_name)
-        #sequence = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/{}_{}.mp4".format(camera_name,s_idx)
-        sequence = "/home/worklab/Data/cv/video/08_06_2021/record_51_{}_00000.mp4".format(camera_name)
+        sequence = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/{}_{}.mp4".format(camera_name,s_idx)
+        #sequence = "/home/worklab/Data/cv/video/08_06_2021/record_51_{}_00000.mp4".format(camera_name)
     
         
         
@@ -987,6 +1009,7 @@ if __name__ == "__main__":
             kf = Torch_KF(torch.device("cpu"))
             kf.F = torch.eye(6)
             kf.F[0,5] = np.nan
+
             
             
             kf.H = torch.tensor([
@@ -995,7 +1018,7 @@ if __name__ == "__main__":
                 [0,0,1,0,0,0],
                 [0,0,0,1,0,0],
                 [0,0,0,0,1,0]
-                ])
+                ]) 
         
             kf.P = torch.tensor([
                 [10,0,0,0,0,0],
@@ -1011,7 +1034,7 @@ if __name__ == "__main__":
             kf.mu_R = torch.zeros(5)
             kf.mu_Q = torch.zeros(6)
             
-            R3 = torch.eye(3) *5
+            R3 = torch.eye(3) * 3
             mu_R3 = torch.zeros(3)
             H3 = torch.tensor([
                 [0,0,1,0,0,0],
@@ -1034,12 +1057,12 @@ if __name__ == "__main__":
             
         
         #%% Run tracker
-        OUT = "track_ims"
+        OUT = None#"track_ims"
         tracker = KIOU_Tracker(sequence,detector,kf_params,hg,class_dict, OUT = OUT)
         tracker.track()
         tracker.write_results_csv()
         
-        if True:
+        if OUT is not None:
             im_to_vid("track_ims",name = sequence.split("/")[-1].split(".")[0])
             for f in os.listdir(OUT):
                 os.remove(os.path.join(OUT, f))

@@ -118,6 +118,10 @@ class MOT_Evaluator():
             except KeyError:
                 if f_idx in self.pred.keys():
                     self.m["FP"] += len(self.pred[f_idx])
+                    for item in self.pred[f_idx]:
+                        id = int(item[2])
+                        if id not in self.m["pred_ids"]:
+                            self.m["pred_ids"].append(id)
                 continue
             
             try:
@@ -125,6 +129,10 @@ class MOT_Evaluator():
             except KeyError:
                 if f_idx in self.gt.keys():
                     self.m["FN"] += len(self.gt[f_idx])
+                    for item in self.gt[f_idx]:
+                        id = int(item[2])
+                        if id not in self.m["gt_ids"]:
+                            self.m["gt_ids"].append(id)
                 continue
                     
             # store ground truth as tensors
@@ -174,7 +182,10 @@ class MOT_Evaluator():
                 self.hg.plot_boxes(im, pred_im, color = (0,0,255), labels = pred_ids)
                 self.hg.plot_boxes(im, gt_im,color = (0,255,0),labels = gt_ids)
                 cv2.imshow("frame",im)
-                cv2.waitKey(1)
+                
+                key = cv2.waitKey(1)
+                if key == ord("p"):
+                    cv2.waitKey(0)
                 
                 
         
@@ -220,12 +231,12 @@ class MOT_Evaluator():
             
             for match in matches:
                 # for each match, store error in L,W,H,x,y,velocity
-                state_err = torch.abs(pred_state[match[1]] - gt_state[match[0]])
+                state_err = torch.clamp(torch.abs(pred_state[match[1]] - gt_state[match[0]]),0,500)
                 self.m["state_err"].append(state_err)
                 
                 # for each match, store absolute 3D bbox pixel error for top and bottom
-                bot_err = torch.mean(torch.sqrt(torch.sum(torch.pow(pred_im[match[1],0:4,:] - gt_im[match[0],0:4,:],2),dim = 1)))
-                top_err = torch.mean(torch.sqrt(torch.sum(torch.pow(pred_im[match[1],4:8,:] - gt_im[match[0],4:8,:],2),dim = 1)))
+                bot_err = torch.clamp(torch.mean(torch.sqrt(torch.sum(torch.pow(pred_im[match[1],0:4,:] - gt_im[match[0],0:4,:],2),dim = 1))),0,500)
+                top_err = torch.clamp(torch.mean(torch.sqrt(torch.sum(torch.pow(pred_im[match[1],4:8,:] - gt_im[match[0],4:8,:],2),dim = 1))),0,500)
                 self.m["im_bot_err"].append(bot_err)
                 self.m["im_top_err"].append(top_err)
             
@@ -268,8 +279,8 @@ class MOT_Evaluator():
         metrics["FN"] = self.m["FN"]
         
         # Compute detection recall, detection precision, detection False alarm rate
-        metrics["Detector Recall"] = self.m["TP"]/(self.m["TP"]+self.m["FN"])
-        metrics["Detector Precision"] = self.m["TP"]/(self.m["TP"]+self.m["FP"])
+        metrics["Detection Recall"] = self.m["TP"]/(self.m["TP"]+self.m["FN"])
+        metrics["Detection Precision"] = self.m["TP"]/(self.m["TP"]+self.m["FP"])
         metrics["False Alarm Rate"] = self.m["FP"]/self.m["TP"]
         # Compute fragmentations - # of IDs assocated with each GT
         metrics["Fragmentations"] = sum([len(self.m["ids"][key])-1 for key in self.m["ids"]])
@@ -347,13 +358,13 @@ if __name__ == "__main__":
     
     camera_name = "p1c2"
     sequence_idx = 0
-    pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/{}_{}_3D_track_outputs.csv".format(camera_name,sequence_idx)
+    pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/{}_{}_3D_track_outputs_old.csv".format(camera_name,sequence_idx)
     gt_path = "/home/worklab/Data/dataset_alpha/manual_correction/rectified_{}_{}_track_outputs_3D.csv".format(camera_name,sequence_idx)
     
     vp_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp/{}_axes.csv".format(camera_name)
     point_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform/{}_im_lmcs_transform_points.csv".format(camera_name)
     
-    sequence =     sequence = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/{}_{}.mp4".format(camera_name,sequence_idx)
+    sequence = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/{}_{}.mp4".format(camera_name,sequence_idx)
 
     
     # we have to define the scale factor for the transformation, which we do based on the first frame of data
@@ -377,7 +388,7 @@ if __name__ == "__main__":
     
     params = {
         "cutoff_frame": 1000,
-        "match_iou":0.5,
+        "match_iou":0.51,
         "sequence":sequence
         }
     
