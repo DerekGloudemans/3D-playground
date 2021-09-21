@@ -36,8 +36,8 @@ class KIOU_Tracker():
                  class_dict,
                  fsld_max = 3,
                  matching_cutoff = 0.95,
-                 iou_cutoff = 0.2,
-                 det_conf_cutoff = 0.3,
+                 iou_cutoff = 0.1,
+                 det_conf_cutoff = 0.5,
                  PLOT = True,
                  OUT = None,
                  downsample = 1,
@@ -437,6 +437,12 @@ class KIOU_Tracker():
         detections = detections.reshape(-1,10,2)
         detections = detections[:,:8,:] # drop 2D boxes
         
+        if perform_nms:
+            idxs = self.im_nms(detections,scores)
+            labels = labels[idxs]
+            detections = detections[idxs]
+            scores = scores[idxs]
+        
         heights = self.hg.guess_heights(labels)
         boxes = self.hg.im_to_state(detections,heights = heights)
         
@@ -454,7 +460,25 @@ class KIOU_Tracker():
         
         return boxes, labels, scores
 
-    def space_nms(self,detections,scores,threshold = 0.3):
+    def im_nms(self,detections,scores,threshold = 0.5):
+        """
+        Performs non-maximal supression on boxes given in image formulation
+        detections - [d,8,2] array of boxes in state formulation
+        scores - [d] array of box scores in range [0,1]
+        threshold - float in range [0,1], boxes with IOU overlap > threshold are pruned
+        returns - idxs - list of indexes of boxes to keep
+        """
+        
+        minx = torch.min(detections[:,:,0],dim = 1)[0]
+        miny = torch.min(detections[:,:,1],dim = 1)[0]
+        maxx = torch.max(detections[:,:,0],dim = 1)[0]
+        maxy = torch.max(detections[:,:,1],dim = 1)[0]
+        
+        boxes = torch.stack((minx,miny,maxx,maxy),dim = 1)
+        idxs = nms(boxes,scores,threshold)
+        return idxs
+
+    def space_nms(self,detections,scores,threshold = 0.1):
         """
         Performs non-maximal supression on boxes given in state formulation
         detections - [d,6] array of boxes in state formulation
@@ -883,7 +907,7 @@ if __name__ == "__main__":
     
     
     #%% Set parameters
-    for camera_name in ["p1c1","p1c2","p1c3","p1c4","p1c5","p1c6"]:
+    for camera_name in ["p1c2"]: #["p1c1","p1c2","p1c3","p1c4","p1c5","p1c6"]:
 
         #camera_name = "p1c4"
         s_idx = "0"
