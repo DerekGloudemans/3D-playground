@@ -832,10 +832,10 @@ class KIOU_Tracker():
             
             # write main chunk
             out.writerow(data_header)
+            print("\n")
             
             for frame in range(self.n_frames):
-                print("\n")
-                print("\rWriting outputs for frame {} of {}".format(frame_num,self.n_frames), end = '\r', flush = True)
+                print("\rWriting outputs for frame {} of {}".format(frame,self.n_frames), end = '\r', flush = True)
 
                 try:
                     timestamp = self.timestamps[frame]
@@ -1058,7 +1058,7 @@ if __name__ == "__main__":
         
         #%% Run tracker
         OUT = None#"track_ims"
-        tracker = KIOU_Tracker(sequence,detector,kf_params,hg,class_dict, OUT = OUT)
+        tracker = KIOU_Tracker(sequence,detector,kf_params,hg,class_dict, OUT = OUT,PLOT = False)
         tracker.track()
         tracker.write_results_csv()
         

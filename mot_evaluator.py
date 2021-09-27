@@ -358,7 +358,7 @@ if __name__ == "__main__":
     
     camera_name = "p1c2"
     sequence_idx = 0
-    pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/{}_{}_3D_track_outputs_old.csv".format(camera_name,sequence_idx)
+    pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/{}_{}_3D_track_outputs.csv".format(camera_name,sequence_idx)
     gt_path = "/home/worklab/Data/dataset_alpha/manual_correction/rectified_{}_{}_track_outputs_3D.csv".format(camera_name,sequence_idx)
     
     vp_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp/{}_axes.csv".format(camera_name)
