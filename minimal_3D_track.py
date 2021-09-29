@@ -668,7 +668,7 @@ class KIOU_Tracker():
                 start = time.time()
                 with torch.no_grad():                       
                     scores,labels,boxes = self.detector(frame.unsqueeze(0))            
-                    torch.cuda.synchronize(self.device)
+                    #torch.cuda.synchronize(self.device)
                 self.time_metrics['detect'] += time.time() - start
                 
                 # move detections to CPU
