@@ -135,8 +135,12 @@ class Torch_KF(object):
         else: # case where velocity estimates are given
             try:
                 newX = torch.from_numpy(detections).to(device)
+                newD = directions.to(self.device)
+
             except:
                 newX = detections.to(self.device)
+                newD = directions.to(self.device)
+
                 
         newP = self.P0.repeat(len(obj_ids),1,1)
 

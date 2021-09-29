@@ -166,10 +166,11 @@ class Filtering_Dataset(data.Dataset):
     Returns 3D labels and images for 3D detector training
     """
     
-    def __init__(self, dataset_dir,min_length = 5,data_subset = None):
+    def __init__(self, dataset_dir,min_length = 9,data_subset = None):
         """ 
         
         """
+        self.with_images = True
         self.min_length = min_length
         
         self.im_tf = transforms.Compose([
@@ -296,9 +297,18 @@ class Filtering_Dataset(data.Dataset):
             i += 1
             datum = self.data[index+i]
         
-        camera_id = datum[0][0].split("/")[-1].split("_")[0]            
-        #ims = torch.stack([self.im_tf(Image.open(im)) for im in datum[0]])
-        ims = datum[0]
+        # to avoid loading all images, we'll randomly pick a subset of the tracklet
+        
+        r_start = np.random.randint(0,len(datum[0]) -self.min_length +1)
+        datum[0] = datum[0][r_start:r_start+self.min_length]
+        datum[1] = datum[1][r_start:r_start+self.min_length]
+        
+        camera_id = datum[0][0].split("/")[-1].split("_")[0]  
+        if self.with_images:          
+            ims = torch.stack([self.im_tf(Image.open(im)) for im in datum[0]])
+        else:
+            ims = torch.zeros([3,1,1])
+        #ims = datum[0]
         
         
         y = torch.stack(datum[1])
@@ -309,7 +319,7 @@ class Filtering_Dataset(data.Dataset):
             new_y[:,[1,3,5,7,9,11,13,15,17,19]] = y[:,[3,1,7,5,11,9,15,13,19,17]]
             y = new_y
             
-        return ims, y
+        return ims, y,camera_id
         
     
     def __len__(self):
@@ -434,12 +444,13 @@ def collate(inputs):
         """
         im = [] # in this dataset, always [3 x W x H]
         label = [] # variable length
+        cameras = []
         max_labels = 0
         
         for batch_item in inputs:
             im.append(batch_item[0])
             label.append(batch_item[1])
-            
+            cameras.append(batch_item[2])
             # keep track of image with largest number of annotations
             if len(batch_item[1]) > max_labels:
                 max_labels = len(batch_item[1])
@@ -454,7 +465,7 @@ def collate(inputs):
             num_objs = len(label[idx])
             
             labels[idx,:num_objs,:] = label[idx]
-        return ims,labels
+        return ims,labels,cameras
 
 
 if __name__ == "__main__":
@@ -512,4 +523,5 @@ if __name__ == "__main__":
     for i in range(100):
         idx = np.random.randint(0,len(test))
         test[idx]
+        print(idx)
     cv2.destroyAllWindows()
