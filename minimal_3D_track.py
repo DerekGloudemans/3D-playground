@@ -24,6 +24,7 @@ from util_track.mp_loader import FrameLoader
 from util_track.kf import Torch_KF
 from util_track.mp_writer import OutputWriter
 from homography import Homography, load_i24_csv
+from mot_evaluator import MOT_Evaluator
 
 
 class KIOU_Tracker():
@@ -41,7 +42,8 @@ class KIOU_Tracker():
                  PLOT = True,
                  OUT = None,
                  downsample = 1,
-                 device_id = 0):
+                 device_id = 0,
+                 cutoff_frame = 10000):
         """
          Parameters
         ----------
@@ -127,7 +129,7 @@ class KIOU_Tracker():
             }
         
         self.idx_colors = np.random.rand(10000,3)
-    
+        self.cutoff_frame = cutoff_frame
     
     def manage_tracks(self,detections,matchings,pre_ids,labels,scores):
         """
@@ -255,6 +257,8 @@ class KIOU_Tracker():
         
         # remove boxes outside of frame
         keys = list(objs.keys())
+        if len(keys) ==0:
+            return
         objs_new = [objs[id] for id in keys]
         objs_new = torch.from_numpy(np.stack(objs_new))
         objs_new = self.hg.state_to_im(objs_new)
@@ -706,7 +710,7 @@ class KIOU_Tracker():
                 self.remove_anomalies()
                 
                 # tweak sizes to better match canonical class sizes
-                self.tweak_sizes()
+                #self.tweak_sizes()
                 
             # get all object locations and store in output dict
             start = time.time()
@@ -739,7 +743,7 @@ class KIOU_Tracker():
             fps_noload = frame_num / (time.time() - self.start_time - self.time_metrics["load"] - self.time_metrics["plot"])
             print("\rTracking frame {} of {} at {:.1f} FPS ({:.1f} FPS without loading and plotting)".format(frame_num,self.n_frames,fps,fps_noload), end = '\r', flush = True)
             
-            if frame_num > 1000:
+            if frame_num > self.cutoff_frame:
                 break
             
         # clean up at the end
@@ -835,6 +839,8 @@ class KIOU_Tracker():
             print("\n")
             
             for frame in range(self.n_frames):
+                if frame > self.cutoff_frame:
+                    break
                 print("\rWriting outputs for frame {} of {}".format(frame,self.n_frames), end = '\r', flush = True)
 
                 try:
@@ -904,6 +910,8 @@ class KIOU_Tracker():
                             obj_line.append(state[4])
     
                             out.writerow(obj_line)
+                            
+                            
         # end file writing
         
 def im_to_vid(directory,name = "video"): 
@@ -925,12 +933,14 @@ def im_to_vid(directory,name = "video"):
     out.release()                
         
         
-if __name__ == "__main__":
-    
-    
+if __name__ == "__main__": 
     #%% Set parameters
-    for camera_name in ["p1c2"]: #["p1c1","p1c2","p1c3","p1c4","p1c5","p1c6"]:
-
+    all_metrics = []
+    
+    for camera_name in ["p1c2","p1c3","p1c4","p1c5","p2c1","p2c6"]:
+        print(camera_name)
+        EVAL = True
+        SHOW = False
         #camera_name = "p1c4"
         s_idx = "0"
         
@@ -939,15 +949,13 @@ if __name__ == "__main__":
         sequence = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/{}_{}.mp4".format(camera_name,s_idx)
         #sequence = "/home/worklab/Data/cv/video/08_06_2021/record_51_{}_00000.mp4".format(camera_name)
     
-        
-        
         det_cp = "/home/worklab/Documents/derek/3D-playground/cpu_15000gt_3D.pt"
-        kf_param_path = None #"util_track/kf_params_6D.cpkl"
-        
+        kf_param_path = "kf_params_naive.cpkl"
+        kf_param_path = "kf_params_save1.cpkl"
+
         
         use_cuda = torch.cuda.is_available()
         device = torch.device("cuda:0" if use_cuda else "cpu")
-        
         
         class_dict = { "sedan":0,
                         "midsize":1,
@@ -968,29 +976,56 @@ if __name__ == "__main__":
                         7:"trailer"
                         }
         
-        #%% Load necessary files
-    
-        # get some data for fitting P
-        data_file = "/home/worklab/Data/dataset_alpha/manual_correction/rectified_{}_0_track_outputs_3D.csv".format(camera_name)
-        labels,data = load_i24_csv(data_file)
-        frame_data = data[0]
-        # convert labels from first frame into tensor form
-        boxes = []
-        classes = []
-        for item in frame_data:
-            if len(item[11]) > 0:
-                boxes.append(np.array(item[11:27]).astype(float))
-                classes.append(item[3])
-        boxes = torch.from_numpy(np.stack(boxes))
-        boxes = torch.stack((boxes[:,::2],boxes[:,1::2]),dim = -1)
+        benchmark_frame = {
+        "p1c1_0":-1,
+        "p1c2_0":1000,
+        "p1c3_0":1000,
+        "p1c4_0":1000,
+        "p1c5_0":1000,
+        "p1c6_0":-1,
         
-        #%% Set up filter, detector, etc.
+        "p2c1_0":230,
+        "p2c2_0":-1,
+        "p2c3_0":-1,
+        "p2c4_0":-1,
+        "p2c5_0":-1,
+        "p2c6_0":300,
+        
+        "p3c1_0":-1,
+        "p3c2_0":-1,
+        "p3c3_0":-1,
+        "p3c4_0":-1,
+        "p3c5_0":-1,
+        "p3c6_0":-1
+        }
+
+        
+        #%% Set up filter, detector, homography
         
         # load homography
-        hg = Homography()
-        hg.add_i24_camera(point_file,vp_file,camera_name)
-        heights = hg.guess_heights(classes)
-        hg.scale_Z(boxes,heights,name = camera_name)
+        try:
+            with open("i24_all_homography.cpkl","rb") as f:
+                hg = pickle.load(f)
+                hg.default_correspondence = camera_name
+        except:
+            # get some data for fitting P
+            data_file = "/home/worklab/Data/dataset_alpha/manual_correction/rectified_{}_0_track_outputs_3D.csv".format(camera_name)
+            labels,data = load_i24_csv(data_file)
+            frame_data = data[0]
+            # convert labels from first frame into tensor form
+            boxes = []
+            classes = []
+            for item in frame_data:
+                if len(item[11]) > 0:
+                    boxes.append(np.array(item[11:27]).astype(float))
+                    classes.append(item[3])
+            boxes = torch.from_numpy(np.stack(boxes))
+            boxes = torch.stack((boxes[:,::2],boxes[:,1::2]),dim = -1)
+                
+            hg = Homography()
+            hg.add_i24_camera(point_file,vp_file,camera_name)
+            heights = hg.guess_heights(classes)
+            hg.scale_Z(boxes,heights,name = camera_name)
         
         
         # load detector
@@ -1006,6 +1041,7 @@ if __name__ == "__main__":
                          
         
         else: # set up kf - we assume measurements will simply be given in state formulation x,y,l,w,h
+            print("Using default KF parameters")
             kf = Torch_KF(torch.device("cpu"))
             kf.F = torch.eye(6)
             kf.F[0,5] = np.nan
@@ -1055,14 +1091,63 @@ if __name__ == "__main__":
                 "H3":H3
                 }
             
+            
         
         #%% Run tracker
-        OUT = None#"track_ims"
-        tracker = KIOU_Tracker(sequence,detector,kf_params,hg,class_dict, OUT = OUT,PLOT = False)
-        tracker.track()
-        tracker.write_results_csv()
+        pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/{}_{}_3D_track_outputs.csv".format(camera_name,s_idx)
+        cutoff_frame = benchmark_frame["{}_{}".format(camera_name,s_idx)]
         
-        if OUT is not None:
-            im_to_vid("track_ims",name = sequence.split("/")[-1].split(".")[0])
-            for f in os.listdir(OUT):
-                os.remove(os.path.join(OUT, f))
+        if not os.path.exists(pred_path):
+            print("Tracking sequence {}".format(sequence))
+            
+            OUT = None#"track_ims"
+            tracker = KIOU_Tracker(sequence,detector,kf_params,hg,class_dict, OUT = OUT,PLOT = SHOW,cutoff_frame = cutoff_frame)
+            tracker.track()
+            tracker.write_results_csv()
+            
+            if OUT is not None:
+                im_to_vid("track_ims",name = sequence.split("/")[-1].split(".")[0])
+                for f in os.listdir(OUT):
+                    os.remove(os.path.join(OUT, f))
+        
+        if EVAL:
+            params = {
+                "cutoff_frame": cutoff_frame,
+                "match_iou":0.51,
+                "sequence":None#sequence
+                }    
+            
+            pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/{}_{}_3D_track_outputs.csv".format(camera_name,s_idx)
+            gt_path = "/home/worklab/Data/dataset_alpha/manual_correction/rectified_{}_{}_track_outputs_3D.csv".format(camera_name,s_idx)
+            ev = MOT_Evaluator(gt_path,pred_path,hg,params = params)
+            ev.evaluate()
+            all_metrics.append(ev.metrics)
+           
+        
+            
+    if EVAL:
+        print("Average metrics for {} sequences\n".format(len(all_metrics)))
+        for metric in all_metrics[0].keys():
+            
+            if type(all_metrics[0][metric]) == tuple:
+                running_total = 0
+                running_stddev = 0
+                for sequence in all_metrics:
+                    
+                    running_total += sequence[metric][0]
+                    running_stddev += sequence[metric][1]
+                
+                running_total  /= len(all_metrics)
+                running_stddev /= len(all_metrics)
+                
+                unit = ev.units[metric]
+                print("{:<30}: {:.2f}{} avg., {:.2f}{} st.dev.".format(metric,running_total,unit,running_stddev,unit))
+                
+            else:
+                running_total = 0
+                for sequence in all_metrics:
+                    
+                    running_total += sequence[metric]
+                running_total  /= len(all_metrics)
+                print("{:<30}: {:.3f}".format(metric,running_total))
+                

@@ -64,6 +64,19 @@ class MOT_Evaluator():
             "pred_ids":[]
             }
         
+        units = {}
+        units["Match IOU"]           = ""
+        units["Pre-threshold IOU"]   = ""
+        units["Width precision"]     = "ft"
+        units["Height precision"]    = "ft"
+        units["Length precision"]    = "ft"
+        units["Velocity precision"]  = "ft/s"
+        units["X precision"]         = "ft"
+        units["Y precision"]         = "ft"
+        units["Bottom im precision"] = "px"
+        units["Top im precision"]    = "px"
+        self.units = units
+        
         if self.sequence is not None:
             self.cap = cv2.VideoCapture(self.sequence)
             
@@ -328,26 +341,13 @@ class MOT_Evaluator():
         metrics["Top im precision"]    = top_mean_stddev
         
         self.metrics = metrics
-        print("\n")
-        self.print_metrics()
         
     def print_metrics(self):
-        
-        units = {}
-        units["Match IOU"]           = ""
-        units["Pre-threshold IOU"]   = ""
-        units["Width precision"]     = "ft"
-        units["Height precision"]    = "ft"
-        units["Length precision"]    = "ft"
-        units["Velocity precision"]  = "ft/s"
-        units["X precision"]         = "ft"
-        units["Y precision"]         = "ft"
-        units["Bottom im precision"] = "px"
-        units["Top im precision"]    = "px"
-        
+        print("\n")
+
         for name in self.metrics:
             try: 
-                unit = units[name]
+                unit = self.units[name]
                 print("{:<30}: {:.2f}{} avg., {:.2f}{} st.dev.".format(name,self.metrics[name][0],unit,self.metrics[name][1],unit))
             except:
                 print("{:<30}: {:.3f}".format(name,self.metrics[name]))
@@ -394,4 +394,4 @@ if __name__ == "__main__":
     
     ev = MOT_Evaluator(gt_path,pred_path,hg,params = params)
     ev.evaluate()
-    
+    ev.print_metrics()
