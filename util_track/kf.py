@@ -85,8 +85,13 @@ class Torch_KF(object):
                 self.R3  = INIT["R3"].unsqueeze(0).to(device).float()
                 self.mu_R3 = INIT["mu_R3"].unsqueeze(0).to(device).float()
                 self.H3 = INIT["H3"].to(device).float()
-
-
+            if "mu_v" in INIT.keys():
+                self.mu_v = INIT["mu_v"]
+            if "class_size" in INIT.keys():
+                self.class_size = INIT["class_size"]
+            if "class_covariance" in INIT.keys():
+                self.class_covariance = INIT["class_covariance"]
+                
             self.state_size = self.F.shape[0]
             self.meas_size  =  self.H.shape[0]
             
@@ -109,7 +114,7 @@ class Torch_KF(object):
         self.mu_R = self.mu_R.to(device).float()
         #self.mu_R2 = self.mu_R.to(device).float()
         
-    def add(self,detections,obj_ids,directions):
+    def add(self,detections,obj_ids,directions,init_speed = False,classes = None):
         """
         Description
         -----------
@@ -141,9 +146,19 @@ class Torch_KF(object):
                 newX = detections.to(self.device)
                 newD = directions.to(self.device)
 
+        if init_speed:
+            newV = self.mu_v.repeat(len(detections)).to(self.device)
+            newX[:,-1] = newV
                 
         newP = self.P0.repeat(len(obj_ids),1,1)
 
+        if classes is not None:
+            # overwrite l,w,h with class mean values
+            for i in range(len(newX)):
+                newX[i,2:5] = self.class_size[classes[i]]
+                newP[i,2:5,2:5] = self.class_covariance[classes[i]]
+            
+            # overwrite l,w,h portion of p with known covariance
         
         # store state and initialize P with defaults
         try:

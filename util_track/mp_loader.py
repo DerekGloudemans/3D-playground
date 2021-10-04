@@ -11,7 +11,6 @@ import os
 import numpy as np
 import random 
 import time
-random.seed = 0
 
 import cv2
 from PIL import Image

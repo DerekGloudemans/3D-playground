@@ -131,7 +131,7 @@ class KIOU_Tracker():
         self.idx_colors = np.random.rand(10000,3)
         self.cutoff_frame = cutoff_frame
     
-    def manage_tracks(self,detections,matchings,pre_ids,labels,scores):
+    def manage_tracks(self,detections,matchings,pre_ids,labels,scores,mean_object_sizes = True):
         """
         Updates each detection matched to an existing tracklet, adds new tracklets 
         for unmatched detections, and increments counters / removes tracklets not matched
@@ -173,6 +173,7 @@ class KIOU_Tracker():
         new_array = np.zeros([len(detections) - len(matchings),5])
         new_directions = np.zeros([len(detections) - len(matchings)])
         new_ids = []
+        new_classes = []
         cur_row = 0
         for i in range(len(detections)):
             if len(matchings) == 0 or i not in matchings[:,1]:
@@ -189,12 +190,15 @@ class KIOU_Tracker():
                 cls = int(labels[i])
                 self.all_classes[self.next_obj_id][cls] += 1
                 self.all_confs[self.next_obj_id].append(scores[i])
+                new_classes.append(self.class_dict[cls])                    
                 
                 self.next_obj_id += 1
                 cur_row += 1
-        if len(new_array) > 0:        
-            self.filter.add(new_array,new_ids,new_directions)
-        
+        if len(new_array) > 0:      
+            if mean_object_sizes:
+                self.filter.add(new_array,new_ids,new_directions,init_speed = True,classes = new_classes)
+            else:
+                self.filter.add(new_array,new_ids,new_directions,init_speed = True)
         
         # 3. For each untracked object, increment fsld        
         for i in range(len(pre_ids)):
@@ -224,21 +228,40 @@ class KIOU_Tracker():
         Checks IoU between each set of tracklet objects and removes the newer tracklet
         when they overlap more than iou_cutoff (likely indicating a tracklet has drifted)
         """
+        
+        
         if self.iou_cutoff > 0:
             removals = []
-            locations = self.filter.objs()
-            for i in locations:
-                for j in locations:
+            objs = self.filter.objs(with_direction = True)
+            if len(objs) == 0:
+                return
+            
+            idxs = [key for key in objs]
+            boxes = torch.from_numpy(np.stack([objs[key] for key in objs]))
+            boxes = self.hg.state_to_space(boxes)
+            
+            
+                # convert into xmin ymin xmax ymax form        
+            boxes_new = torch.zeros([boxes.shape[0],4])
+            boxes_new[:,0] = torch.min(boxes[:,0:4,0],dim = 1)[0]
+            boxes_new[:,2] = torch.max(boxes[:,0:4,0],dim = 1)[0]
+            boxes_new[:,1] = torch.min(boxes[:,0:4,1],dim = 1)[0]
+            boxes_new[:,3] = torch.max(boxes[:,0:4,1],dim = 1)[0]
+            
+            for i in range(len(idxs)):
+                for j in range(len(idxs)):
                     if i != j:
-                        iou_metric = self.iou(locations[i],locations[j])
+                        iou_metric = self.iou(boxes_new[i],boxes_new[j])
                         if iou_metric > self.iou_cutoff:
                             # determine which object has been around longer
                             if len(self.all_classes[i]) > len(self.all_classes[j]):
-                                removals.append(j)
+                                removals.append(idxs[j])
                             else:
-                                removals.append(i)
-            removals = list(set(removals))
-            self.filter.remove(removals)
+                                removals.append(idxs[i])
+            if len(removals) > 0:
+                removals = list(set(removals))
+                self.filter.remove(removals)
+                #print("Removed overlapping object")
    
     def remove_anomalies(self,max_sizes = [75,16,20]):
         """
@@ -537,8 +560,6 @@ class KIOU_Tracker():
             object x,y coordinates for first frame
         second - np.array [m,2]
             object x,y coordinates for second frame
-        iou_cutoff - float in range[0,1]
-            Intersection over union threshold below which match will not be considered
         
         Returns
         -------
@@ -706,7 +727,7 @@ class KIOU_Tracker():
                 self.manage_tracks(detections,matchings,pre_ids,labels,scores)
         
                 # remove overlapping objects and anomalies
-                #self.remove_overlaps()
+                self.remove_overlaps()
                 self.remove_anomalies()
                 
                 # tweak sizes to better match canonical class sizes
@@ -950,8 +971,9 @@ if __name__ == "__main__":
         #sequence = "/home/worklab/Data/cv/video/08_06_2021/record_51_{}_00000.mp4".format(camera_name)
     
         det_cp = "/home/worklab/Documents/derek/3D-playground/cpu_15000gt_3D.pt"
+        #det_cp = "/home/worklab/Documents/derek/3D-playground/cpu_directional_v3_e15.pt"
         kf_param_path = "kf_params_naive.cpkl"
-        kf_param_path = "kf_params_save1.cpkl"
+        kf_param_path = "kf_params_save2.cpkl"
 
         
         use_cuda = torch.cuda.is_available()
@@ -1038,7 +1060,7 @@ if __name__ == "__main__":
         if kf_param_path is not None:
             with open(kf_param_path ,"rb") as f:
                 kf_params = pickle.load(f)
-                         
+                kf_params["R"] /= 10.0
         
         else: # set up kf - we assume measurements will simply be given in state formulation x,y,l,w,h
             print("Using default KF parameters")
@@ -1113,7 +1135,7 @@ if __name__ == "__main__":
         if EVAL:
             params = {
                 "cutoff_frame": cutoff_frame,
-                "match_iou":0.51,
+                "match_iou":0.5,
                 "sequence":None#sequence
                 }    
             

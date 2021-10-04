@@ -26,6 +26,40 @@ from i24_fit_filter_dataset import Filtering_Dataset,collate
 from util_track.kf import Torch_KF
 from homography import Homography, load_i24_csv
 
+
+def iou(a,b):
+        """
+        Description
+        -----------
+        Calculates intersection over union for all sets of boxes in a and b
+    
+        Parameters
+        ----------
+        a : tensor of size [batch_size,4] 
+            bounding boxes
+        b : tensor of size [batch_size,4]
+            bounding boxes.
+    
+        Returns
+        -------
+        iou - float between [0,1]
+            average iou for a and b
+        """
+        
+        area_a = (a[2]-a[0]) * (a[3]-a[1])
+        area_b = (b[2]-b[0]) * (b[3]-b[1])
+        
+        minx = max(a[0], b[0])
+        maxx = min(a[2], b[2])
+        miny = max(a[1], b[1])
+        maxy = min(a[3], b[3])
+        
+        intersection = max(0, maxx-minx) * max(0,maxy-miny)
+        union = area_a + area_b - intersection
+        iou = intersection/union
+        
+        return iou
+
 def get_homographies():
     try:
         with open("i24_all_homography.cpkl","rb") as f:
@@ -271,7 +305,7 @@ kf_params["Q"] = covariance
 
 #%% Fit Detector R
 dataset.with_images = True
-n_iterations = 200
+n_iterations = 1000
 
 errors = []
 for idx in range(n_iterations):
@@ -292,8 +326,15 @@ for idx in range(n_iterations):
         temp_boxes = hg.im_to_state(gt_im,heights = heights,name = camera)
         repro_boxes = hg.state_to_im(temp_boxes,name = camera)
         refined_heights = hg.height_from_template(repro_boxes,heights,gt_im)
-        gt_state = hg.im_to_state(gt_im,heights = refined_heights,name = camera).squeeze(0)
+        gt_state = hg.im_to_state(gt_im,heights = refined_heights,name = camera)
         
+        gt_space = hg.state_to_space(gt_state)
+        gt_box = torch.zeros([gt_space.shape[0],4])
+        gt_box[:,0] = torch.min(gt_space[:,0:4,0],dim = 1)[0]
+        gt_box[:,2] = torch.max(gt_space[:,0:4,0],dim = 1)[0]
+        gt_box[:,1] = torch.min(gt_space[:,0:4,1],dim = 1)[0]
+        gt_box[:,3] = torch.max(gt_space[:,0:4,1],dim = 1)[0]
+        gt_box = gt_box.squeeze(0)
         
         # predict boxes with detector
         with torch.no_grad():
@@ -312,20 +353,28 @@ for idx in range(n_iterations):
         refined_heights = hg.height_from_template(repro_boxes,heights,detections)
         detections = hg.im_to_state(detections,heights = refined_heights,name = camera)
         
+        pred_space = hg.state_to_space(detections)
+        boxes_new = torch.zeros([pred_space.shape[0],4])
+        boxes_new[:,0] = torch.min(pred_space[:,0:4,0],dim = 1)[0]
+        boxes_new[:,2] = torch.max(pred_space[:,0:4,0],dim = 1)[0]
+        boxes_new[:,1] = torch.min(pred_space[:,0:4,1],dim = 1)[0]
+        boxes_new[:,3] = torch.max(pred_space[:,0:4,1],dim = 1)[0]
         # find closest box to match to gt box
         min_dist = np.inf
         min_box = None
-        for box in detections:
-            dist = torch.sqrt((gt_state[1] - box[1])**2 + (gt_state[0] - box[0])**2)
+        for d_idx in range(len(boxes_new)):
+            box = boxes_new[d_idx]
+            dist = 1.0 - iou(box,gt_box)
+            
             
             if dist < min_dist:
                 min_dist = dist
-                min_box = box
+                min_box = detections[d_idx]
         
         error = min_box - gt_state
-        errors.append(error[:5].unsqueeze(0))
+        errors.append(error[0,:5])
         
-error_vectors = torch.cat(errors,dim = 0)
+error_vectors = torch.stack(errors)
 mean = torch.mean(error_vectors, dim = 0)
     
 covariance = torch.zeros((5,5))
@@ -339,8 +388,11 @@ print("Measurement error covariance: \n {}".format((covariance*1000).round()/100
 kf_params["mu_R"] = mean
 kf_params["R"] = covariance
 
+with open("kf_params_save2.cpkl","wb") as f:
+    pickle.dump(kf_params,f)
+
 #%% Fit Class Nudging R - per class, get mean size and covariance
-n_iterations = 2000
+n_iterations = 0
 dataset.with_images = False
 
 means = {}
@@ -390,7 +442,7 @@ kf_params["class_covariance"] = class_covariances
 
 
 #%% Get average velocity
-n_iterations = 2000
+n_iterations = 0
 dataset.with_images = False
 
 vecs = []
@@ -435,5 +487,5 @@ kf_params["P"][5,5] = covariance.item()
 
 
 #%%
-with open("kf_params_save1.cpkl","wb") as f:
+with open("kf_params_save2.cpkl","wb") as f:
     pickle.dump(kf_params,f)

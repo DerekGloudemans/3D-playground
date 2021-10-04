@@ -51,6 +51,9 @@ class MOT_Evaluator():
         class_confusion_matrix = np.zeros([n_classes,n_classes])
         self.m = {
             "FP":0,
+            "FP edge-case":0,
+            "FP @ 0.2":0,
+            "FN @ 0.2":0,
             "FN":0,
             "TP":0,
             "pre_thresh_IOU":[],
@@ -188,17 +191,6 @@ class MOT_Evaluator():
             pred_space = self.hg.state_to_space(pred_state)
             pred_im = self.hg.state_to_im(pred_state)
             
-            
-            # plot
-            if True and self.sequence:
-                #plot gt
-                self.hg.plot_boxes(im, pred_im, color = (0,0,255), labels = pred_ids)
-                self.hg.plot_boxes(im, gt_im,color = (0,255,0),labels = gt_ids)
-                cv2.imshow("frame",im)
-                
-                key = cv2.waitKey(1)
-                if key == ord("p"):
-                    cv2.waitKey(0)
                 
                 
         
@@ -229,18 +221,72 @@ class MOT_Evaluator():
             # get matches and keep those above threshold
             a, b = linear_sum_assignment(ious,maximize = True)
             matches = []
+            gt_im_matched_idxs = []
+            pred_im_matched_idxs = []
             for i in range(len(a)):
                 iou = ious[a[i],b[i]]
                 self.m["pre_thresh_IOU"].append(iou)
                 if iou >= self.match_iou:
+                    
                     matches.append([a[i],b[i]])
+                    gt_im_matched_idxs.append(a[i])
+                    pred_im_matched_idxs.append(b[i])
+                    
                     self.m["match_IOU"].append(iou)
+            
+            
+            # plot
+            if True and self.sequence:
+                # gt                
+                unmatched_idxs = []
+                for i in range(len(gt_im)):
+                    if i not in gt_im_matched_idxs:
+                        unmatched_idxs.append(i)
+                gt_im_unmatched = gt_im[unmatched_idxs]
+                
+                # preds
+                unmatched_idxs = []
+                for i in range(len(pred_im)):
+                    if i not in pred_im_matched_idxs:
+                        unmatched_idxs.append(i)
+                pred_im_unmatched = pred_im[unmatched_idxs]
+                
+                pred_im_matched = pred_im[pred_im_matched_idxs]
+                gt_im_matched   = gt_im[gt_im_matched_idxs]
+                
+                self.hg.plot_boxes(im, pred_im_matched, color = (255,0,0)) # blue
+                self.hg.plot_boxes(im,gt_im_matched,color = (0,255,0))     # green
+                
+                self.hg.plot_boxes(im, gt_im_unmatched,color = (0,0,255),thickness =2)     # red
+                self.hg.plot_boxes(im, pred_im_unmatched,color = (0,100,255),thickness =2) # orange
+
+                cv2.imshow("frame",im)
+                
+                key = cv2.waitKey(1)
+                if key == ord("p"):
+                    cv2.waitKey(0)
+                    
+                    
+                    
+            
+            # of the pred objects not in b, dont count as FP those that fall outside of frame 
+            for i in range(len(pred_ids)):
+                if pred_ids[i] not in b: # no match
+                    obj = pred_im[i]
+                    if obj[0,0] < 0 or obj[2,0] < 0 or obj[0,0] > 1920 or obj[2,0] > 1920:
+                         self.m["FP edge-case"] += 1
+                         continue
+                    if obj[0,1] < 0 or obj[2,1] < 0 or obj[0,1] > 1080 or obj[2,1] > 1080:
+                         self.m["FP edge-case"] += 1
+                         
             
             # count FP, FN, TP
             self.m["TP"] += len(matches)
             self.m["FP"] += max(0,(len(pred_state) - len(matches)))
             self.m["FN"] += max(0,(len(gt_state) - len(matches)))
             
+            self.m["FP @ 0.2"] += max(0,len(pred_state) - len(a))
+            self.m["FN @ 0.2"] += max(0,len(gt_state) - len(a))
             
             for match in matches:
                 # for each match, store error in L,W,H,x,y,velocity
@@ -290,10 +336,13 @@ class MOT_Evaluator():
         metrics["TP"] = self.m["TP"]
         metrics["FP"] = self.m["FP"]
         metrics["FN"] = self.m["FN"]
+        metrics["FP edge-case"] = self.m["FP edge-case"]
+        metrics["FP @ 0.2"] = self.m["FP @ 0.2"]
+        metrics["FN @ 0.2"] = self.m["FN @ 0.2"]
         
         # Compute detection recall, detection precision, detection False alarm rate
-        metrics["Detection Recall"] = self.m["TP"]/(self.m["TP"]+self.m["FN"])
-        metrics["Detection Precision"] = self.m["TP"]/(self.m["TP"]+self.m["FP"])
+        metrics["Recall"] = self.m["TP"]/(self.m["TP"]+self.m["FN"])
+        metrics["Precision"] = self.m["TP"]/(self.m["TP"]+self.m["FP"])
         metrics["False Alarm Rate"] = self.m["FP"]/self.m["TP"]
         # Compute fragmentations - # of IDs assocated with each GT
         metrics["Fragmentations"] = sum([len(self.m["ids"][key])-1 for key in self.m["ids"]])
@@ -312,7 +361,9 @@ class MOT_Evaluator():
         
         # Compute MOTA
         metrics["MOTA"] = 1 - (self.m["FN"] +  metrics["ID switches"] + self.m["FP"])/(self.m["TP"])
-    
+        metrics["MOTA edge-case"]  = 1 - (self.m["FN"] +  metrics["ID switches"] + self.m["FP"]- self.m["FP edge-case"])/(self.m["TP"])
+        metrics["MOTA @ 0.2"] = 1 - (self.m["FN @ 0.2"] +  metrics["ID switches"] + self.m["FP @ 0.2"])/(self.m["TP"])
+        
         # Compute average detection metrics in various spaces
         ious = np.array(self.m["match_IOU"])
         iou_mean_stddev = np.mean(ious),np.std(ious)
@@ -341,6 +392,7 @@ class MOT_Evaluator():
         metrics["Top im precision"]    = top_mean_stddev
         
         self.metrics = metrics
+        self.print_metrics()
         
     def print_metrics(self):
         print("\n")
