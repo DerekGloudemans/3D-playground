@@ -73,7 +73,7 @@ class MC_Crop_Tracker():
         self.max_size = params['max_size'] if 'max_size' in params else torch.tensor([75,15,17]) # max object size (L,W,H) in feet
         
         # get GPU
-        device_id = params["GPU"] if GPU in params else 0
+        device_id = params["GPU"] if "GPU" in params else 0
         use_cuda = torch.cuda.is_available()
         self.device = torch.device("cuda:{}".format(device_id) if use_cuda else "cpu")
         torch.cuda.set_device(device_id)
@@ -149,25 +149,418 @@ class MC_Crop_Tracker():
         self.frames = torch.stack([chunk[1][0] for chunk in next_frames])
         self.original_ims = [chunk[1][2] for chunk in next_frames]
         self.frame_num
+     
+    def parse_detections(self,scores,labels,boxes,camera_idxs,n_best = 200,perform_nms = True,refine_height = False):
+        """
+        Removes low confidence detection, converts detections to state space, and
+        optionally performs non-maximal-supression
+        scores - [d] array with confidence values in range [0,1]
+        labels - [d] array with integer class predictions for detections
+        camera_idxs - [d] list with index into self.camera_list of correct camera
+        detections - [d,20] array with 16 3D box coordinates and 4 2D box coordinates
+        n_best - (int) if detector confidence cutoff is too low to sufficiently separate
+                 good from bad detections, the n_best highest confidence detections are kept
+        perform_nms - (bool) if True, NMS is performed
         
+        returns - detections - [d_new,8,2] array with box points in 3D-space
+                  labels - [d_new] array with kept classes
+        """
+        if len(scores) == 0:
+            return [],[],[]
+        
+        # remove duplicates
+        cutoff = torch.ones(scores.shape) * self.det_conf_cutoff
+        keepers = torch.where(scores > cutoff)
+        
+        labels = labels[keepers]
+        detections  = boxes[keepers]
+        scores = scores[keepers]
+        
+        if self.det_conf_cutoff < 0.2:
+            _,indices = torch.sort(scores)
+            keepers = indices[:n_best]
+            
+            labels = labels[keepers]
+            detections  = boxes[keepers]
+            scores = scores[keepers]
+        
+        if len(detections) == 0:
+            return [],[],[]
+        # Homography object expects boxes in the form [d,8,2] - reshape detections
+        detections = detections.reshape(-1,10,2)
+        detections = detections[:,:8,:] # drop 2D boxes
+        
+        ### TOTO - this should be modified such that detections from each frame are not compared against each other
+        if perform_nms:
+            idxs = self.im_nms(detections,scores)
+            labels = labels[idxs]
+            detections = detections[idxs]
+            scores = scores[idxs]
+        
+        # get list of camera_ids to pass to hg
+        cam_list = [self.cameras[i] for i in camera_idxs]
+        
+        heights = self.hg.guess_heights(labels)
+        boxes = self.hg.im_to_state(detections,heights = heights,name = cam_list)
+        
+        if refine_height:
+            repro_boxes = self.hg.state_to_im(boxes, name = cam_list)
+            
+            refined_heights = self.hg.height_from_template(repro_boxes,heights,detections,name = cam_list)
+            boxes = self.hg.im_to_state(detections,heights = refined_heights,name = cam_list)
+        
+        if perform_nms:
+            idxs = self.space_nms(boxes,scores)
+            labels = labels[idxs]
+            boxes = boxes[idxs]
+            scores = scores[idxs]
+        
+        return boxes, labels, scores
+ 
+    def manage_tracks(self,detections,matchings,pre_ids,labels,scores,mean_object_sizes = True):
+        """
+        Updates each detection matched to an existing tracklet, adds new tracklets 
+        for unmatched detections, and increments counters / removes tracklets not matched
+        to any detection
+        """
+        start = time.time()
+
+        # 1. Update tracked and matched objects
+        update_array = np.zeros([len(matchings),5])
+        update_ids = []
+        update_classes = []
+        update_confs = []
+        
+        for i in range(len(matchings)):
+            a = matchings[i,0] # index of pre_loc
+            b = matchings[i,1] # index of detections
+           
+            update_array[i,:] = detections[b,:5]
+            update_ids.append(pre_ids[a])
+            update_classes.append(labels[b])
+            update_confs.append(scores[b])
+            
+            self.fsld[pre_ids[a]] = 0 # fsld = 0 since this id was detected this frame
+        
+        if len(update_array) > 0:    
+            self.filter.update(update_array,update_ids)
+            
+            # store class and confidence (used to parse good objects)
+            for i in range(len(update_ids)):
+                self.all_classes[update_ids[i]][int(update_classes[i])] += 1
+                self.all_confs[update_ids[i]].append(update_confs[i])
+                
+            self.time_metrics['update'] += time.time() - start
+              
+        
+        # 2. For each detection not in matchings, add a new object
+        start = time.time()
+        
+        new_array = np.zeros([len(detections) - len(matchings),5])
+        new_directions = np.zeros([len(detections) - len(matchings)])
+        new_ids = []
+        new_classes = []
+        cur_row = 0
+        for i in range(len(detections)):
+            if len(matchings) == 0 or i not in matchings[:,1]:
+                
+                new_ids.append(self.next_obj_id)
+                new_array[cur_row,:] = detections[i,:5]
+                new_directions[cur_row] = detections[i,5]
+
+                self.fsld[self.next_obj_id] = 0
+                self.all_tracks[self.next_obj_id] = np.zeros([self.n_frames,self.state_size])
+                self.all_classes[self.next_obj_id] = np.zeros(8)
+                self.all_confs[self.next_obj_id] = []
+                
+                cls = int(labels[i])
+                self.all_classes[self.next_obj_id][cls] += 1
+                self.all_confs[self.next_obj_id].append(scores[i])
+                new_classes.append(self.class_dict[cls])                    
+                
+                self.next_obj_id += 1
+                cur_row += 1
+        if len(new_array) > 0:      
+            if mean_object_sizes:
+                self.filter.add(new_array,new_ids,new_directions,init_speed = True,classes = new_classes)
+            else:
+                self.filter.add(new_array,new_ids,new_directions,init_speed = True)
+        
+        # 3. For each untracked object, increment fsld        
+        for i in range(len(pre_ids)):
+            try:
+                if i not in matchings[:,0]:
+                    self.fsld[pre_ids[i]] += 1
+            except:
+                self.fsld[pre_ids[i]] += 1
+        
+        
+        # 4. Remove lost objects
+        removals = []
+        for id in pre_ids:
+            if self.fsld[id] >= self.fsld_max and len(self.all_classes[id] < self.fsld_max + 2):  # after a burn-in period, objects are no longer removed unless they leave frame
+                removals.append(id)
+                self.fsld.pop(id,None) # remove key from fsld
+        if len(removals) > 0:
+            self.filter.remove(removals)    
+    
+        self.time_metrics['add and remove'] += time.time() - start
+        
+    
+    
+    # TODO - rewrite for new state formulation
+    def remove_overlaps(self):
+        """
+        Checks IoU between each set of tracklet objects and removes the newer tracklet
+        when they overlap more than iou_cutoff (likely indicating a tracklet has drifted)
+        """
+        
+        
+        if self.iou_cutoff > 0:
+            removals = []
+            objs = self.filter.objs(with_direction = True)
+            if len(objs) == 0:
+                return
+            
+            idxs = [key for key in objs]
+            boxes = torch.from_numpy(np.stack([objs[key] for key in objs]))
+            boxes = self.hg.state_to_space(boxes)
+            
+            
+                # convert into xmin ymin xmax ymax form        
+            boxes_new = torch.zeros([boxes.shape[0],4])
+            boxes_new[:,0] = torch.min(boxes[:,0:4,0],dim = 1)[0]
+            boxes_new[:,2] = torch.max(boxes[:,0:4,0],dim = 1)[0]
+            boxes_new[:,1] = torch.min(boxes[:,0:4,1],dim = 1)[0]
+            boxes_new[:,3] = torch.max(boxes[:,0:4,1],dim = 1)[0]
+            
+            for i in range(len(idxs)):
+                for j in range(len(idxs)):
+                    if i != j:
+                        iou_metric = self.iou(boxes_new[i],boxes_new[j])
+                        if iou_metric > self.iou_cutoff:
+                            # determine which object has been around longer
+                            if len(self.all_classes[i]) > len(self.all_classes[j]):
+                                removals.append(idxs[j])
+                            else:
+                                removals.append(idxs[i])
+            if len(removals) > 0:
+                removals = list(set(removals))
+                self.filter.remove(removals)
+                #print("Removed overlapping object")
+   
+    def remove_anomalies(self):
+        """
+        Removes all objects with negative size or size greater than max_size
+        """
+        max_sizes = self.max_size
+        removals = []
+        objs = self.filter.objs(with_direction = True)
+        for i in objs:
+            obj = objs[i]
+            if obj[1] > 120 or obj [1] < -10:
+                removals.append(i)
+            elif obj[2] > max_sizes[0] or obj[2] < 0 or obj[3] > max_sizes[1] or obj[3] < 0 or obj[4] > max_sizes[2] or obj[4] < 0:
+                removals.append(i)
+            elif obj[5] > 150 or obj[5] < -150:
+                removals.append(i)      
+        
+        ## TODO - we'll need to check to make sure that objects are outside of all cameras!
+        keys = list(objs.keys())
+        if len(keys) ==0:
+            return
+        objs_new = [objs[id] for id in keys]
+        objs_new = torch.from_numpy(np.stack(objs_new))
+        objs_new = self.hg.state_to_im(objs_new)
+        
+        for i in range(len(keys)):
+            obj = objs_new[i]
+            if obj[0,0] < 0 and obj[2,0] < 0 or obj[0,0] > 1920 and obj[2,0] > 1920:
+                removals.append(keys[i])
+            if obj[0,1] < 0 and obj[2,1] < 0 or obj[0,1] > 1080 and obj[2,1] > 1080:
+                removals.append(keys[i])
+                
+        removals = list(set(removals))
+        self.filter.remove(removals)         
+    
+    
+    # TODO - rewrite for new state formulation
+    def iou(self,a,b):
+        """
+        Description
+        -----------
+        Calculates intersection over union for all sets of boxes in a and b
+    
+        Parameters
+        ----------
+        a : tensor of size [batch_size,4] 
+            bounding boxes
+        b : tensor of size [batch_size,4]
+            bounding boxes.
+    
+        Returns
+        -------
+        iou - float between [0,1]
+            average iou for a and b
+        """
+        
+        area_a = (a[2]-a[0]) * (a[3]-a[1])
+        area_b = (b[2]-b[0]) * (b[3]-b[1])
+        
+        minx = max(a[0], b[0])
+        maxx = min(a[2], b[2])
+        miny = max(a[1], b[1])
+        maxy = min(a[3], b[3])
+        
+        intersection = max(0, maxx-minx) * max(0,maxy-miny)
+        union = area_a + area_b - intersection
+        iou = intersection/union
+        
+        return iou
+    
+    def im_nms(self,detections,scores,threshold = 0.8):
+        """
+        Performs non-maximal supression on boxes given in image formulation
+        detections - [d,8,2] array of boxes in state formulation
+        scores - [d] array of box scores in range [0,1]
+        threshold - float in range [0,1], boxes with IOU overlap > threshold are pruned
+        returns - idxs - list of indexes of boxes to keep
+        """
+        
+        minx = torch.min(detections[:,:,0],dim = 1)[0]
+        miny = torch.min(detections[:,:,1],dim = 1)[0]
+        maxx = torch.max(detections[:,:,0],dim = 1)[0]
+        maxy = torch.max(detections[:,:,1],dim = 1)[0]
+        
+        boxes = torch.stack((minx,miny,maxx,maxy),dim = 1)
+        idxs = nms(boxes,scores,threshold)
+        return idxs
+
+    def space_nms(self,detections,scores,threshold = 0.1):
+        """
+        Performs non-maximal supression on boxes given in state formulation
+        detections - [d,6] array of boxes in state formulation
+        scores - [d] array of box scores in range [0,1]
+        threshold - float in range [0,1], boxes with IOU overlap > threshold are pruned
+        returns - idxs - indexes of boxes to keep
+        """
+        detections = self.hg.state_to_space(detections.clone())
+        
+        # convert into xmin ymin xmax ymax form        
+        boxes_new = torch.zeros([detections.shape[0],4])
+        boxes_new[:,0] = torch.min(detections[:,0:4,0],dim = 1)[0]
+        boxes_new[:,2] = torch.max(detections[:,0:4,0],dim = 1)[0]
+        boxes_new[:,1] = torch.min(detections[:,0:4,1],dim = 1)[0]
+        boxes_new[:,3] = torch.max(detections[:,0:4,1],dim = 1)[0]
+                
+        idxs = nms(boxes_new,scores,threshold)
+        return idxs
+        
+    # Rewrite again for 3D
+    def match_hungarian(self,first,second):
+        """
+        Description
+        -----------
+        performs  optimal (in terms of sum distance) matching of points 
+        in first to second using the Hungarian algorithm
+        
+        inputs - N x 2 arrays of object x and y coordinates from different frames
+        output - M x 1 array where index i corresponds to the second frame object 
+            matched to the first frame object i
+    
+        Parameters
+        ----------
+        first - np.array [n,2]
+            object x,y coordinates for first frame
+        second - np.array [m,2]
+            object x,y coordinates for second frame
+        
+        Returns
+        -------
+        out_matchings - np.array [l]
+            index i corresponds to second frame object matched to first frame object i
+            l is not necessarily equal to either n or m (can have unmatched object from both frames)
+        
+        """
+        
+        if len(first) == 0 or len(second) == 0:
+            return []
+        
+        # first and second are in state form - convert to space form
+        first = self.hg.state_to_space(first.clone())
+        boxes_new = torch.zeros([first.shape[0],4])
+        boxes_new[:,0] = torch.min(first[:,0:4,0],dim = 1)[0]
+        boxes_new[:,2] = torch.max(first[:,0:4,0],dim = 1)[0]
+        boxes_new[:,1] = torch.min(first[:,0:4,1],dim = 1)[0]
+        boxes_new[:,3] = torch.max(first[:,0:4,1],dim = 1)[0]
+        first = boxes_new
+        
+        second = self.hg.state_to_space(second.clone())
+        boxes_new = torch.zeros([second.shape[0],4])
+        boxes_new[:,0] = torch.min(second[:,0:4,0],dim = 1)[0]
+        boxes_new[:,2] = torch.max(second[:,0:4,0],dim = 1)[0]
+        boxes_new[:,1] = torch.min(second[:,0:4,1],dim = 1)[0]
+        boxes_new[:,3] = torch.max(second[:,0:4,1],dim = 1)[0]
+        second = boxes_new
+    
+        
+        # find distances between first and second
+        if False:
+            dist = np.zeros([len(first),len(second)])
+            for i in range(0,len(first)):
+                for j in range(0,len(second)):
+                    dist[i,j] = np.sqrt((first[i,0]-second[j,0])**2 + (first[i,1]-second[j,1])**2)
+        else:
+            dist = np.zeros([len(first),len(second)])
+            for i in range(0,len(first)):
+                for j in range(0,len(second)):
+                    dist[i,j] = 1 - self.iou(first[i],second[j].data.numpy())
+                
+        try:
+            a, b = linear_sum_assignment(dist)
+        except ValueError:
+            print(dist,first,second)
+            raise Exception
+        
+        # convert into expected form
+        matchings = np.zeros(len(first))-1
+        for idx in range(0,len(a)):
+            matchings[a[idx]] = b[idx]
+        matchings = np.ndarray.astype(matchings,int)
+        
+        # remove any matches too far away
+        for i in range(len(matchings)):
+            try:
+                if dist[i,matchings[i]] > self.matching_cutoff:
+                    matchings[i] = -1
+            except:
+                pass
+            
+        # write into final form
+        out_matchings = []
+        for i in range(len(matchings)):
+            if matchings[i] != -1:
+                out_matchings.append([i,matchings[i]])
+        return np.array(out_matchings)
+        
+    
     def track(self):
         
         
         self.start_time = time.time()
+        self.next() # advances frame
 
         
-        while frame_num != -1:            
+        while self.frame_num != -1:            
             
             # predict next object locations
             start = time.time()
-            self.next() # advances frame
             
             try: # in the case that there are no active objects will throw exception
                 self.filter.predict()
                 pre_locations = self.filter.objs(with_direction = True)
             except:
-                pre_locations = []    
-                
+                pre_locations = []        
             pre_ids = []
             pre_loc = []
             for id in pre_locations:
@@ -184,7 +577,7 @@ class MC_Crop_Tracker():
                 # detection step
                 start = time.time()
                 with torch.no_grad():                       
-                    scores,labels,boxes = self.detector(frame.unsqueeze(0))            
+                    scores,labels,boxes = self.detector(self.frames)            
                     #torch.cuda.synchronize(self.device)
                 self.time_metrics['detect'] += time.time() - start
                 
@@ -204,8 +597,8 @@ class MC_Crop_Tracker():
                 
                 # temp check via plotting
                 if False:
-                    original_im = self.hg.plot_boxes(original_im,self.hg.state_to_im(detections))
-                    cv2.imshow("frame",original_im)
+                    self.original_ims[0] = self.hg.plot_boxes(self.original_ims[0],self.hg.state_to_im(detections))
+                    cv2.imshow("frame",self.original_ims[0])
                     cv2.waitKey(0)
                     cv2.destroyAllWindows()
                 
@@ -221,9 +614,7 @@ class MC_Crop_Tracker():
                 # remove overlapping objects and anomalies
                 self.remove_overlaps()
                 self.remove_anomalies()
-                
-                # tweak sizes to better match canonical class sizes
-                #self.tweak_sizes()
+
                 
             # get all object locations and store in output dict
             start = time.time()
@@ -242,21 +633,21 @@ class MC_Crop_Tracker():
             # Plot
             start = time.time()
             if self.PLOT:
-                self.plot(original_im,detections,post_locations,self.all_classes,frame = frame_num,pre_locations = pre_loc,label_len = 5)
+                self.plot(detections,post_locations,self.all_classes,frame = frame_num,pre_locations = pre_loc,label_len = 5)
             self.time_metrics['plot'] += time.time() - start
        
             # load next frame  
             start = time.time()
-            frame_num ,(frame,dim,original_im) = next(self.loader) 
+            self.next() 
             torch.cuda.synchronize()
             self.time_metrics["load"] = time.time() - start
             torch.cuda.empty_cache()
             
-            fps = frame_num / (time.time() - self.start_time)
-            fps_noload = frame_num / (time.time() - self.start_time - self.time_metrics["load"] - self.time_metrics["plot"])
-            print("\rTracking frame {} of {} at {:.1f} FPS ({:.1f} FPS without loading and plotting)".format(frame_num,self.n_frames,fps,fps_noload), end = '\r', flush = True)
+            fps = self.frame_num / (time.time() - self.start_time)
+            fps_noload = self.frame_num / (time.time() - self.start_time - self.time_metrics["load"] - self.time_metrics["plot"])
+            print("\rTracking frame {} of {} at {:.1f} FPS ({:.1f} FPS without loading and plotting)".format(self.frame_num,self.n_frames,fps,fps_noload), end = '\r', flush = True)
             
-            if frame_num > self.cutoff_frame:
+            if self.frame_num > self.cutoff_frame:
                 break
             
         # clean up at the end
