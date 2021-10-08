@@ -183,7 +183,10 @@ class MOT_Evaluator():
             pred_ids = []
             pred_state = []
             for box in pred:
-                pred_state.append(np.array([box[39],box[40],box[43],box[42],box[44],box[35],box[38]]).astype(float))
+                if len(box) == 44: # cludgey fix for when there is no height column
+                    box.append(2)
+                    
+                pred_state.append(np.array([box[39],box[40],box[43],box[42],box[44],box[35],box[38]]).astype(float)) 
                 pred_ids.append(int(box[2]))
                 pred_classes.append(box[3])
             
@@ -203,7 +206,7 @@ class MOT_Evaluator():
             boxes_new[:,3] = torch.max(first[:,0:4,1],dim = 1)[0]
             first = boxes_new
             
-            second = pred_space.clone()
+            second = pred_space.clone()#*3.281
             boxes_new = torch.zeros([second.shape[0],4])
             boxes_new[:,0] = torch.min(second[:,0:4,0],dim = 1)[0]
             boxes_new[:,2] = torch.max(second[:,0:4,0],dim = 1)[0]
@@ -254,11 +257,11 @@ class MOT_Evaluator():
                 pred_im_matched = pred_im[pred_im_matched_idxs]
                 gt_im_matched   = gt_im[gt_im_matched_idxs]
                 
-                self.hg.plot_boxes(im, pred_im_matched, color = (255,0,0)) # blue
-                self.hg.plot_boxes(im,gt_im_matched,color = (0,255,0))     # green
+                self.hg.plot_boxes(im, pred_im_matched, color = (255,0,0)) # blue # ground truth box
+                self.hg.plot_boxes(im,gt_im_matched,color = (0,255,0))     # green # predicted box
                 
-                self.hg.plot_boxes(im, gt_im_unmatched,color = (0,0,255),thickness =2)     # red
-                self.hg.plot_boxes(im, pred_im_unmatched,color = (0,100,255),thickness =2) # orange
+                self.hg.plot_boxes(im, gt_im_unmatched,color = (0,0,255),thickness =2)     # red, FN
+                self.hg.plot_boxes(im, pred_im_unmatched,color = (0,100,255),thickness =2) # orange, FP
 
                 cv2.imshow("frame",im)
                 
@@ -270,13 +273,13 @@ class MOT_Evaluator():
                     
             
             # of the pred objects not in b, dont count as FP those that fall outside of frame 
-            for i in range(len(pred_ids)):
-                if pred_ids[i] not in b: # no match
+            for i in range(len(pred_im)):
+                if i not in b: # no match
                     obj = pred_im[i]
                     if obj[0,0] < 0 or obj[2,0] < 0 or obj[0,0] > 1920 or obj[2,0] > 1920:
                          self.m["FP edge-case"] += 1
                          continue
-                    if obj[0,1] < 0 or obj[2,1] < 0 or obj[0,1] > 1080 or obj[2,1] > 1080:
+                    elif obj[0,1] < 0 or obj[2,1] < 0 or obj[0,1] > 1080 or obj[2,1] > 1080:
                          self.m["FP edge-case"] += 1
                          
             
@@ -305,7 +308,10 @@ class MOT_Evaluator():
                 cls_string = gt_classes[match[0]]
                 gt_cls = self.hg.class_dict[cls_string]
                 cls_string = pred_classes[match[1]]
-                pred_cls = self.hg.class_dict[cls_string]
+                try:
+                    pred_cls = self.hg.class_dict[cls_string]
+                except:
+                    pred_cls = 5
                 self.m["cls"][gt_cls,pred_cls] += 1
             
             # store the ID associated with each ground truth object
@@ -408,14 +414,14 @@ class MOT_Evaluator():
 
 if __name__ == "__main__":
     
-    camera_name = "p1c2"
+    camera_name = "p1c4"
     sequence_idx = 0
-    pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/{}_{}_3D_track_outputs.csv".format(camera_name,sequence_idx)
-    gt_path = "/home/worklab/Data/dataset_alpha/manual_correction/rectified_{}_{}_track_outputs_3D.csv".format(camera_name,sequence_idx)
     
+    pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/{}_{}_3D_track_outputs.csv".format(camera_name,sequence_idx)
+    #pred_path = "/home/worklab/Downloads/rectified_p1c4_0_track_outputs_3D.csv"
+    gt_path = "/home/worklab/Data/dataset_alpha/manual_correction/rectified_{}_{}_track_outputs_3D.csv".format(camera_name,sequence_idx)
     vp_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp/{}_axes.csv".format(camera_name)
     point_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform/{}_im_lmcs_transform_points.csv".format(camera_name)
-    
     sequence = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/{}_{}.mp4".format(camera_name,sequence_idx)
 
     

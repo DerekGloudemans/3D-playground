@@ -166,12 +166,13 @@ class Detection_Dataset(data.Dataset):
     Returns 3D labels and images for 3D detector training
     """
     
-    def __init__(self, dataset_dir, label_format = "tailed_footprint", mode = "train"):
+    def __init__(self, dataset_dir, label_format = "tailed_footprint", mode = "train",CROP = 0):
         """ 
         
         """
         self.mode = mode
         self.label_format = label_format
+        self.CROP = CROP
         
         self.im_tf = transforms.Compose([
                 transforms.RandomApply([
@@ -415,95 +416,182 @@ class Detection_Dataset(data.Dataset):
         #     new_y[:,9] = y_tail
         #     new_y[:,10] = y[:,-1]
         #     y = new_y
-            
         
-            
         
-        # convert image and label to tensors
-        im_t = self.im_tf(im)
         
-        TILE = np.random.rand()
-        if TILE > 0.25:
-            # find min and max x coordinate for each bbox
-            occupied_x = []
-            occupied_y = []
-            for box in y:
-                xmin = min(box[[0,2,4,6,8,10,12,14]])
-                xmax = max(box[[0,2,4,6,8,10,12,14]])
-                ymin = min(box[[1,3,5,7,9,11,13,15]])
-                ymax = max(box[[1,3,5,7,9,11,13,15]])
-                occupied_x.append([xmin,xmax])
-                occupied_y.append([ymin,ymax])
+        
+        if self.CROP == 0:
+            # convert image to tensor
+            im_t = self.im_tf(im)
             
-            attempts = 0
-            good = False
-            while not good and attempts < 10:
-                good = True
-                xsplit = np.random.randint(0,im.size[0])
-                for rang in occupied_x:
-                    if xsplit > rang[0] and xsplit < rang[1]:
-                        good = False
-                        attempts += 1
+            TILE = np.random.rand()
+            if TILE > 0.25:
+                # find min and max x coordinate for each bbox
+                occupied_x = []
+                occupied_y = []
+                for box in y:
+                    xmin = min(box[[0,2,4,6,8,10,12,14]])
+                    xmax = max(box[[0,2,4,6,8,10,12,14]])
+                    ymin = min(box[[1,3,5,7,9,11,13,15]])
+                    ymax = max(box[[1,3,5,7,9,11,13,15]])
+                    occupied_x.append([xmin,xmax])
+                    occupied_y.append([ymin,ymax])
+                
+                attempts = 0
+                good = False
+                while not good and attempts < 10:
+                    good = True
+                    xsplit = np.random.randint(0,im.size[0])
+                    for rang in occupied_x:
+                        if xsplit > rang[0] and xsplit < rang[1]:
+                            good = False
+                            attempts += 1
+                            break
+                    if good:
                         break
-                if good:
-                    break
-            
-            attempts = 0
-            good = False
-            while not good and attempts < 10:
-                good = True
-                ysplit = np.random.randint(0,im.size[1])
-                for rang in occupied_y:
-                    if ysplit > rang[0] and ysplit < rang[1]:
-                        good = False
-                        attempts += 1
+                
+                attempts = 0
+                good = False
+                while not good and attempts < 10:
+                    good = True
+                    ysplit = np.random.randint(0,im.size[1])
+                    for rang in occupied_y:
+                        if ysplit > rang[0] and ysplit < rang[1]:
+                            good = False
+                            attempts += 1
+                            break
+                    if good:
                         break
-                if good:
-                    break
+                
+                #print(xsplit,ysplit)
+                
+                im11 = im_t[:,:ysplit,:xsplit]
+                im12 = im_t[:,ysplit:,:xsplit]
+                im21 = im_t[:,:ysplit,xsplit:]
+                im22 = im_t[:,ysplit:,xsplit:]
             
-            #print(xsplit,ysplit)
-            
-            im11 = im_t[:,:ysplit,:xsplit]
-            im12 = im_t[:,ysplit:,:xsplit]
-            im21 = im_t[:,:ysplit,xsplit:]
-            im22 = im_t[:,ysplit:,xsplit:]
+                if TILE > 0.25 and TILE < 0.5:
+                    im_t = torch.cat((torch.cat((im21,im22),dim = 1),torch.cat((im11,im12),dim = 1)),dim = 2)
+                elif TILE > 0.5 and TILE < 0.75: 
+                    im_t = torch.cat((torch.cat((im22,im21),dim = 1),torch.cat((im12,im11),dim = 1)),dim = 2)
+                elif TILE > 0.75:
+                    im_t = torch.cat((torch.cat((im12,im11),dim = 1),torch.cat((im22,im21),dim = 1)),dim = 2)
+                
+                if TILE > 0.25 and TILE < 0.75:
+                    for idx in range(0,len(y)):
+                        if occupied_x[idx][0] > xsplit:
+                            y[idx,[0,2,4,6,8,10,12,14,16,18]] = y[idx,[0,2,4,6,8,10,12,14,16,18]] - xsplit
+                        else:
+                            y[idx,[0,2,4,6,8,10,12,14,16,18]] = y[idx,[0,2,4,6,8,10,12,14,16,18]] + (im_t.shape[2] - xsplit)
+                            
+                if TILE > 0.5:
+                     for idx in range(0,len(y)):
+                        if occupied_y[idx][0] > ysplit:
+                            y[idx,[1,3,5,7,9,11,13,15,17,19]] = y[idx,[1,3,5,7,9,11,13,15,17,19]] - ysplit
+                        else:
+                            y[idx,[1,3,5,7,9,11,13,15,17,19]] = y[idx,[1,3,5,7,9,11,13,15,17,19]] + (im_t.shape[1] - ysplit)
+                    
+            #append vp (actually we only need one copy but for simplicity append it to every label)
+            vps = vps.unsqueeze(0).repeat(len(y),1).float()
+            y = y.float()
+            y = torch.cat((y,vps),dim = 1)
         
-            if TILE > 0.25 and TILE < 0.5:
-                im_t = torch.cat((torch.cat((im21,im22),dim = 1),torch.cat((im11,im12),dim = 1)),dim = 2)
-            elif TILE > 0.5 and TILE < 0.75: 
-                im_t = torch.cat((torch.cat((im22,im21),dim = 1),torch.cat((im12,im11),dim = 1)),dim = 2)
-            elif TILE > 0.75:
-                im_t = torch.cat((torch.cat((im12,im11),dim = 1),torch.cat((im22,im21),dim = 1)),dim = 2)
+        
+        
+        elif self.CROP > 0:
+        
+            classes = y[:,20].clone() 
+            # use one object to define center
+            if y[0,0] != -1:
+                idx = np.random.randint(len(y))
+    
+    
+                box = y[idx]
+                centx = (box[16] + box[18])/2.0
+                centy = (box[17] + box[19])/2.0
+                noise = np.random.normal(0,20,size = 2)
+                centx += noise[0]
+                centy += noise[1]
+                
+                size = max(box[19]-box[17],box[18] - box[16])
+                size_noise = max( -(size*1/4) , np.random.normal(size*1/4,size/4))
+                size += size_noise
+                
+                if size < 50:
+                    size = 50
+            else:
+                size = max(50,np.random.normal(300,25))
+                centx = np.random.randint(100,1000)
+                centy = np.random.randint(100,1000)
+            try:
+                minx = int(centx - size/2)
+                miny = int(centy - size/2)
+                maxx = int(centx + size/2)
+                maxy = int(centy + size/2)
             
-            if TILE > 0.25 and TILE < 0.75:
-                for idx in range(0,len(y)):
-                    if occupied_x[idx][0] > xsplit:
-                        y[idx,[0,2,4,6,8,10,12,14,16,18]] = y[idx,[0,2,4,6,8,10,12,14,16,18]] - xsplit
-                    else:
-                        y[idx,[0,2,4,6,8,10,12,14,16,18]] = y[idx,[0,2,4,6,8,10,12,14,16,18]] + (im_t.shape[2] - xsplit)
-                        
-            if TILE > 0.5:
-                 for idx in range(0,len(y)):
-                    if occupied_y[idx][0] > ysplit:
-                        y[idx,[1,3,5,7,9,11,13,15,17,19]] = y[idx,[1,3,5,7,9,11,13,15,17,19]] - ysplit
-                    else:
-                        y[idx,[1,3,5,7,9,11,13,15,17,19]] = y[idx,[1,3,5,7,9,11,13,15,17,19]] + (im_t.shape[1] - ysplit)
+            except TypeError:
+                print(centx,centy,size)
+            
+            try:
+                im_crop = F.crop(im,miny,minx,maxy-miny,maxx-minx)
+            except:
+                print (miny,minx,maxy,maxx,size,centx,centy)
+                im_crop = im.copy()
+                y = torch.zeros([1,21]) -1
+            del im 
+            
+            if im_crop.size[0] == 0 or im_crop.size[1] == 0:
+                print("Oh no! {} {} {}".format(centx,centy,size))
+                raise Exception
                 
-            # if TILE > 0.5 and TILE < 0.75:
-            #     im_t = torch.cat((torch.cat((im22,im21),dim = 1),torch.cat((im12,im11),dim = 1)),dim = 2)
-            #     if occupied_y[idx][0] > ysplit:
-            #             y[idx,[1,3,5,7,9,11,13,15]] = y[idx,[1,3,5,7,9,11,13,15]] - ysplit
-                        
-            #     if occupied_y[idx][0] > xsplit:
-            #         x[idx,[0,2,4,6,8,10,12,14]] = x[idx,[0,2,4,6,8,10,12,14]] - xsplit
+            # shift labels if there is at least one object
+       
+            if y[0,0] != -1:
                 
-            # if TILE > 0.75:    
-            #     im_t = torch.cat((torch.cat((im12,im11),dim = 1),torch.cat((im22,im21),dim = 1)),dim = 2)
+                y[:,::2] -= minx
+                y[:,1::2] -= miny
                 
-        #append vp (actually we only need one copy but for simplicity append it to every label)
-        vps = vps.unsqueeze(0).repeat(len(y),1).float()
-        y = y.float()
-        y = torch.cat((y,vps),dim = 1)
+    
+            crop_size = im_crop.size
+            im_crop = F.resize(im_crop, (self.CROP,self.CROP))
+    
+    
+            y[:,::2]  *=  self.CROP/crop_size[0]
+            y[:,1::2] *=  self.CROP/crop_size[1]
+        
+            
+            # remove all labels that aren't in crop
+            if torch.sum(y) != 0:
+                keepers = []
+                for i,item in enumerate(y):
+                    if item[16] < self.CROP-15 and item[18] > 0+15 and item[17] < self.CROP-15 and item[19] > 0+15:
+                        keepers.append(i)
+                y = y[keepers]
+                classes = classes[keepers]
+            
+            if len(y) == 0:
+                y = torch.zeros([1,21]) -1
+                classes = torch.tensor([-1])
+                #y[0,4] = 0
+            
+            im_t = self.im_tf(im_crop)
+    
+            OCCLUDE = np.random.rand()
+            if OCCLUDE > 0.9:
+                # roughly occlude bottom, left or right third of image
+                yo_min = np.random.randint(im_t.shape[2]/3,im_t.shape[2])
+                yo_max = im_t.shape[2]
+                xo_min = np.random.randint(0,im_t.shape[1]/3)
+                xo_max = np.random.randint(im_t.shape[1]*2/3,im_t.shape[1])
+                region = torch.tensor([xo_min,yo_min,xo_max,yo_max]).int()
+                
+                r =  torch.normal(0.485,0.229,[int(region[3])-int(region[1]),int(region[2])-int(region[0])])
+                g =  torch.normal(0.456,0.224,[int(region[3])-int(region[1]),int(region[2])-int(region[0])])
+                b =  torch.normal(0.406,0.225,[int(region[3])-int(region[1]),int(region[2])-int(region[0])])
+                rgb = torch.stack([r,g,b])
+                im_t[:,int(region[1]):int(region[3]),int(region[0]):int(region[2])] = rgb 
+            
+            y[:,20] = classes
         
         return im_t, y
         
@@ -695,7 +783,7 @@ if __name__ == "__main__":
     
 #%%   
     
-    test = Detection_Dataset(cache_dir,label_format = "8_corners",mode = "test")
+    test = Detection_Dataset(cache_dir,label_format = "8_corners",mode = "test", CROP = 224)
     
     for i in range(1000):
         idx = np.random.randint(0,len(test))

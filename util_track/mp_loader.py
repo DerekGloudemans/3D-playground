@@ -86,7 +86,9 @@ class FrameLoader():
             
             self.frame_idx = -1
             
-            self.len = 30*5*60
+            test = cv2.VideoCapture(sequence)
+            self.len = test.get(7)
+            test.release()
             
             self.worker = ctx.Process(target=load_to_queue_video, args=(self.queue,sequence,device,buffer_size,))
             self.worker.start()

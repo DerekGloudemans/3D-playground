@@ -129,7 +129,7 @@ class Homography():
                 "motorcycle":4,
                 "trailer":3,
                 "other":5
-            }
+                }
         
         
         self.class_dims = {
