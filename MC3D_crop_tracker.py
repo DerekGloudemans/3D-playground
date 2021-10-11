@@ -29,7 +29,7 @@ from homography import Homography, load_i24_csv
 
 class MC_Crop_Tracker():
     """
-    A multiple object tracker that extends crop based tracking by: 
+    A multiple object tracker that extends crop-based tracking by: 
         i.) representing and tracking objects in 3D
         ii.) querying from multiple overlapping cameras to perform measurement updates
     
@@ -40,7 +40,7 @@ class MC_Crop_Tracker():
                  kf_params,
                  homography,
                  class_dict,
-                 params,
+                 params = {},
                  PLOT = True,
                  OUT = None,
                  early_cutoff = 1000):
@@ -109,7 +109,10 @@ class MC_Crop_Tracker():
         if OUT is not None:
             for cam in self.cameras:
                 cam_frame_dir = os.path.join(OUT,cam)
-                os.mkdir(cam_frame_dir)
+                try:
+                    os.mkdir(cam_frame_dir)
+                except FileExistsError:
+                    pass
                 w = OutputWriter(cam_frame_dir)
                 self.writers.append(w)
         
@@ -145,10 +148,10 @@ class MC_Crop_Tracker():
         
     def __next__(self):
         next_frames = [next(l) for l in self.loaders]
-        frame_num = next_frames[0][0]
+        self.frame_num = next_frames[0][0]
         self.frames = torch.stack([chunk[1][0] for chunk in next_frames])
         self.original_ims = [chunk[1][2] for chunk in next_frames]
-        self.frame_num
+        
      
     def parse_detections(self,scores,labels,boxes,camera_idxs,n_best = 200,perform_nms = True,refine_height = False):
         """
@@ -190,9 +193,9 @@ class MC_Crop_Tracker():
         detections = detections.reshape(-1,10,2)
         detections = detections[:,:8,:] # drop 2D boxes
         
-        ### TOTO - this should be modified such that detections from each frame are not compared against each other
+        ### detections from each frame are not compared against each other
         if perform_nms:
-            idxs = self.im_nms(detections,scores)
+            idxs = self.im_nms(detections,scores,groups = camera_idxs)
             labels = labels[idxs]
             detections = detections[idxs]
             scores = scores[idxs]
@@ -308,7 +311,6 @@ class MC_Crop_Tracker():
         
     
     
-    # TODO - rewrite for new state formulation
     def remove_overlaps(self):
         """
         Checks IoU between each set of tracklet objects and removes the newer tracklet
@@ -384,7 +386,6 @@ class MC_Crop_Tracker():
         self.filter.remove(removals)         
     
     
-    # TODO - rewrite for new state formulation
     def iou(self,a,b):
         """
         Description
@@ -418,12 +419,13 @@ class MC_Crop_Tracker():
         
         return iou
     
-    def im_nms(self,detections,scores,threshold = 0.8):
+    def im_nms(self,detections,scores,threshold = 0.8,groups = None):
         """
         Performs non-maximal supression on boxes given in image formulation
         detections - [d,8,2] array of boxes in state formulation
         scores - [d] array of box scores in range [0,1]
         threshold - float in range [0,1], boxes with IOU overlap > threshold are pruned
+        groups - None or [d] tensor of unique group for each box, boxes from different groups will supress each other
         returns - idxs - list of indexes of boxes to keep
         """
         
@@ -433,6 +435,12 @@ class MC_Crop_Tracker():
         maxy = torch.max(detections[:,:,1],dim = 1)[0]
         
         boxes = torch.stack((minx,miny,maxx,maxy),dim = 1)
+        
+        if groups is not None:
+            large_offset = 10000
+            offset = groups.unsqueeze(1).repeat(1,4) * large_offset
+            boxes = boxes + large_offset
+        
         idxs = nms(boxes,scores,threshold)
         return idxs
 
@@ -456,7 +464,6 @@ class MC_Crop_Tracker():
         idxs = nms(boxes_new,scores,threshold)
         return idxs
         
-    # Rewrite again for 3D
     def match_hungarian(self,first,second):
         """
         Description
@@ -546,9 +553,8 @@ class MC_Crop_Tracker():
     
     def track(self):
         
-        
         self.start_time = time.time()
-        self.next() # advances frame
+        next(self) # advances frame
 
         
         while self.frame_num != -1:            
@@ -577,7 +583,7 @@ class MC_Crop_Tracker():
                 # detection step
                 start = time.time()
                 with torch.no_grad():                       
-                    scores,labels,boxes = self.detector(self.frames)            
+                    scores,labels,boxes,im_idxs = self.detector(self.frames,MULTI_FRAME = True)            
                     #torch.cuda.synchronize(self.device)
                 self.time_metrics['detect'] += time.time() - start
                 
@@ -591,7 +597,7 @@ class MC_Crop_Tracker():
                    
                 # postprocess detections - after this step, remaining detections are in state space
                 start = time.time()
-                detections,labels,scores = self.parse_detections(scores,labels,boxes,refine_height = True)
+                detections,labels,scores = self.parse_detections(scores,labels,boxes,im_idxs,refine_height = True)
                 self.time_metrics['parse'] += time.time() - start
              
                 
@@ -624,7 +630,7 @@ class MC_Crop_Tracker():
                 post_locations = {}
             for id in post_locations:
                 try:
-                   self.all_tracks[id][frame_num,:] = post_locations[id][:self.state_size]   
+                   self.all_tracks[id][self.frame_num,:] = post_locations[id][:self.state_size]   
                 except IndexError:
                     print("Index Error")
             self.time_metrics['store'] += time.time() - start  
@@ -633,12 +639,12 @@ class MC_Crop_Tracker():
             # Plot
             start = time.time()
             if self.PLOT:
-                self.plot(detections,post_locations,self.all_classes,frame = frame_num,pre_locations = pre_loc,label_len = 5)
+                self.plot(detections,post_locations,self.all_classes,pre_locations = pre_loc,label_len = 5)
             self.time_metrics['plot'] += time.time() - start
        
             # load next frame  
             start = time.time()
-            self.next() 
+            next(self)
             torch.cuda.synchronize()
             self.time_metrics["load"] = time.time() - start
             torch.cuda.empty_cache()
@@ -653,3 +659,136 @@ class MC_Crop_Tracker():
         # clean up at the end
         self.end_time = time.time()
         cv2.destroyAllWindows()
+        
+        
+        
+        
+        
+        
+        
+
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+if __name__ == "__main__":
+    
+    # inputs
+    sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/p1c2_0.mp4",
+                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/p1c3_0.mp4"]
+    det_cp = "/home/worklab/Documents/derek/3D-playground/cpu_15000gt_3D.pt"
+    
+    kf_param_path = "kf_params_naive.cpkl"
+    kf_param_path = "kf_params_save2.cpkl"
+    
+    params = {
+        }
+
+    
+    use_cuda = torch.cuda.is_available()
+    device = torch.device("cuda:0" if use_cuda else "cpu")
+    
+    class_dict = { "sedan":0,
+                    "midsize":1,
+                    "van":2,
+                    "pickup":3,
+                    "semi":4,
+                    "truck (other)":5,
+                    "truck": 5,
+                    "motorcycle":6,
+                    "trailer":7,
+                    0:"sedan",
+                    1:"midsize",
+                    2:"van",
+                    3:"pickup",
+                    4:"semi",
+                    5:"truck (other)",
+                    6:"motorcycle",
+                    7:"trailer"
+                    }
+    
+    # load homography
+    with open("i24_all_homography.cpkl","rb") as f:
+        hg = pickle.load(f)
+        
+    
+    # load detector
+    detector = resnet50(8)
+    detector.load_state_dict(torch.load(det_cp))
+    detector = detector.to(device)
+    
+    # set up filter params
+    if kf_param_path is not None:
+        with open(kf_param_path ,"rb") as f:
+            kf_params = pickle.load(f)
+            kf_params["R"] /= 10.0
+    
+    else: # set up kf - we assume measurements will simply be given in state formulation x,y,l,w,h
+        print("Using default KF parameters")
+        kf = Torch_KF(torch.device("cpu"))
+        kf.F = torch.eye(6)
+        kf.F[0,5] = np.nan
+
+        
+        
+        kf.H = torch.tensor([
+            [1,0,0,0,0,0],
+            [0,1,0,0,0,0],
+            [0,0,1,0,0,0],
+            [0,0,0,1,0,0],
+            [0,0,0,0,1,0]
+            ]) 
+    
+        kf.P = torch.tensor([
+            [10,0,0,0,0,0],
+            [0,100,0,0,0,0],
+            [0,0,100,0,0,0],
+            [0,0,0,100 ,0,0],
+            [0,0,0,0,100,0],
+            [0,0,0,0,0,10000]
+            ])
+    
+        kf.Q = torch.eye(6) 
+        kf.R = torch.eye(5) 
+        kf.mu_R = torch.zeros(5)
+        kf.mu_Q = torch.zeros(6)
+        
+        R3 = torch.eye(3) * 3
+        mu_R3 = torch.zeros(3)
+        H3 = torch.tensor([
+            [0,0,1,0,0,0],
+            [0,0,0,1,0,0],
+            [0,0,0,0,1,0]
+            ])
+        
+        kf_params = {
+            "mu_Q":kf.mu_Q,
+            "mu_R":kf.mu_R,
+            "F":kf.F,
+            "H":kf.H,
+            "P":kf.P,
+            "Q":kf.Q,
+            "R":kf.R,
+            "R3":R3,
+            "mu_R3":mu_R3,
+            "H3":H3
+            }
+        
+        
+    
+    #%% Run tracker
+    pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/temp_3D_track_outputs.csv"
+    cutoff_frame = 1000
+    OUT = "track_ims"
+    
+    tracker = MC_Crop_Tracker(sequences,detector,kf_params,hg,class_dict, params = params, OUT = OUT,PLOT = True,early_cutoff = cutoff_frame)
+    tracker.track()
+    tracker.write_results_csv()
+    
+    

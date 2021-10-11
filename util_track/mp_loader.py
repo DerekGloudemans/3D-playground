@@ -101,7 +101,7 @@ class FrameLoader():
         Returns number of frames in the track directory
         """
         try:
-            return self.len
+            return int(self.len)
         except:   
             return len(self.files)
     

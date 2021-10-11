@@ -16,6 +16,46 @@ model_urls = {
 }
 
 
+def batched_nms(boxes, scores, idxs, iou_threshold):
+    # type: (Tensor, Tensor, Tensor, float)
+    """
+    Performs non-maximum suppression in a batched fashion.
+
+    Each index value correspond to a category, and NMS
+    will not be applied between elements of different categories.
+
+    Parameters
+    ----------
+    boxes : Tensor[N, 4]
+        boxes where NMS will be performed. They
+        are expected to be in (x1, y1, x2, y2) format
+    scores : Tensor[N]
+        scores for each one of the boxes
+    idxs : Tensor[N]
+        indices of the categories for each one of the boxes.
+    iou_threshold : float
+        discards all overlapping boxes
+        with IoU > iou_threshold
+
+    Returns
+    -------
+    keep : Tensor
+        int64 tensor with the indices of
+        the elements that have been kept by NMS, sorted
+        in decreasing order of scores
+    """
+    if boxes.numel() == 0:
+        return torch.empty((0,), dtype=torch.int64, device=boxes.device)
+    # strategy: in order to perform NMS independently per class.
+    # we add an offset to all the boxes. The offset is dependent
+    # only on the class idx, and is large enough so that boxes
+    # from different classes do not overlap
+    max_coordinate = boxes.max()
+    offsets = idxs.to(boxes) * (max_coordinate + 1)
+    boxes_for_nms = boxes + offsets[:, None]
+    keep = nms(boxes_for_nms, scores, iou_threshold)
+    return keep
+
 class PyramidFeatures(nn.Module):
     def __init__(self, C3_size, C4_size, C5_size, feature_size=256):
         super(PyramidFeatures, self).__init__()
@@ -241,7 +281,7 @@ class ResNet(nn.Module):
             if isinstance(layer, nn.BatchNorm2d):
                 layer.eval()
 
-    def forward(self, inputs, LOCALIZE = False):
+    def forward(self, inputs, LOCALIZE = False,MULTI_FRAME = False):
 
         if self.training:
             img_batch, annotations = inputs
@@ -267,16 +307,53 @@ class ResNet(nn.Module):
 
         if self.training:
             return self.focalLoss(classification, regression, anchors, annotations)
+        
+        elif MULTI_FRAME:
+            transformed_anchors = self.regressBoxes(anchors, regression)
+
+            imIndexes = torch.tensor([i for i in range(len(transformed_anchors))]).unsqueeze(1).repeat(1,transformed_anchors.shape[1])
+            
+            # flatten transformed anchors and classifications and imIndexes
+            imIndexes = imIndexes.reshape(-1)
+            transformed_anchors = transformed_anchors.reshape(1,-1,transformed_anchors.shape[2]).squeeze()
+            classification = classification.reshape(1,-1,classification.shape[2]).squeeze()
+            scores,classes = torch.max(classification,dim = 1)
+            
+            keep = 10000
+            keep_count = 1000000
+            threshold = 1e-7
+            while keep_count > keep: 
+                scores_over_thresh = (scores > threshold)
+                keep_count = scores_over_thresh.sum()
+                threshold *= (10**.2)
+            
+            scores = scores[scores_over_thresh]
+            classes = classes[scores_over_thresh]
+            anchorBoxes = transformed_anchors[scores_over_thresh]
+            classification = classification[scores_over_thresh]
+            imIndexes = imIndexes[scores_over_thresh]
+            
+            anchors_nms_idx = batched_nms(anchorBoxes[:,16:20], scores, imIndexes,0.5) # change back to 0.5
+            
+            scores = scores[anchors_nms_idx]
+            classes = classes[anchors_nms_idx]
+            anchorBoxes = anchorBoxes[anchors_nms_idx]
+            classification = classification[anchors_nms_idx]
+            imIndexes = imIndexes[anchors_nms_idx]
+            
+            return classification,classes,anchorBoxes,imIndexes
+            
         else:
             transformed_anchors = self.regressBoxes(anchors, regression)
             #transformed_anchors = self.clipBoxes(transformed_anchors, img_batch)
 
-            finalResult = [[], [], []]
+            # finalResult = [[], [], []]
 
             finalScores = torch.Tensor([])
             finalAnchorBoxesIndexes = torch.Tensor([]).long()
             finalAnchorBoxesCoordinates = torch.Tensor([])
-
+            finalImIndexes = torch.Tensor([]).long()
+            
             if torch.cuda.is_available():
                 finalScores = finalScores.cuda()
                 finalAnchorBoxesIndexes = finalAnchorBoxesIndexes.cuda()
@@ -305,9 +382,9 @@ class ResNet(nn.Module):
                 anchorBoxes = anchorBoxes[scores_over_thresh]
                 anchors_nms_idx = nms(anchorBoxes[:,16:20], scores, 0.5) # change back to 0.5
 
-                finalResult[0].extend(scores[anchors_nms_idx])
-                finalResult[1].extend(torch.tensor([i] * anchors_nms_idx.shape[0]))
-                finalResult[2].extend(anchorBoxes[anchors_nms_idx])
+                # finalResult[0].extend(scores[anchors_nms_idx])
+                # finalResult[1].extend(torch.tensor([i] * anchors_nms_idx.shape[0]))
+                # finalResult[2].extend(anchorBoxes[anchors_nms_idx])
 
                 finalScores = torch.cat((finalScores, scores[anchors_nms_idx]))
                 finalAnchorBoxesIndexesValue = torch.tensor([i] * anchors_nms_idx.shape[0])
