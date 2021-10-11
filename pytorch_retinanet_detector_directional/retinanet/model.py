@@ -341,7 +341,7 @@ class ResNet(nn.Module):
             classification = classification[anchors_nms_idx]
             imIndexes = imIndexes[anchors_nms_idx]
             
-            return classification,classes,anchorBoxes,imIndexes
+            return scores,classes,anchorBoxes,imIndexes
             
         else:
             transformed_anchors = self.regressBoxes(anchors, regression)

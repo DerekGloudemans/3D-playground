@@ -958,9 +958,9 @@ if __name__ == "__main__":
     #%% Set parameters
     all_metrics = []
     
-    for camera_name in ["p1c2","p1c3","p1c4","p1c5","p2c1","p2c6"]:
+    for camera_name in ["p1c1","p1c2","p1c3","p1c4","p1c5","p1c6"]:
         print(camera_name)
-        EVAL = True
+        EVAL = False
         SHOW = False
         #camera_name = "p1c4"
         s_idx = "0"
@@ -1118,6 +1118,7 @@ if __name__ == "__main__":
         #%% Run tracker
         pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/{}_{}_3D_track_outputs.csv".format(camera_name,s_idx)
         cutoff_frame = benchmark_frame["{}_{}".format(camera_name,s_idx)]
+        cutoff_frame = 9000
         
         if not os.path.exists(pred_path):
             print("Tracking sequence {}".format(sequence))

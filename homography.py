@@ -333,8 +333,16 @@ class Homography():
         points = torch.cat((points,torch.ones([points.shape[0],1]).double()),1) # add 3rd row
         
         if heights is not None:
-            H = torch.from_numpy(self.correspondence[name]["H"]).transpose(0,1)
-            new_pts = torch.matmul(points,H)
+            
+            if type(name) == list:
+                H = torch.from_numpy(np.stack([self.correspondence[sub_n]["H"].transpose(1,0) for sub_n in name])) # note that must do transpose(1,0) because this is a numpy operation, not a torch operation ...
+                H = H.unsqueeze(1).repeat(1,8,1,1).reshape(-1,3,3)
+                points = points.unsqueeze(1)
+                new_pts = torch.bmm(points,H)
+                new_pts = new_pts.squeeze(1)
+            else:
+                H = torch.from_numpy(self.correspondence[name]["H"]).transpose(0,1)
+                new_pts = torch.matmul(points,H)
             
             # divide each point 0th and 1st column by the 2nd column
             new_pts[:,0] = new_pts[:,0] / new_pts[:,2]
@@ -375,12 +383,17 @@ class Homography():
         points = points.reshape(-1,3)
         points = torch.cat((points.double(),torch.ones([points.shape[0],1]).double()),1) # add 4th row
         
-        # [dm,3]
-        points = torch.transpose(points,0,1).double()
         
         # project into [dm,3]
-        P = torch.from_numpy(self.correspondence[name]["P"]).double()
-        new_pts=  torch.matmul(P,points).transpose(0,1)
+        if type(name) == list:
+                P = torch.from_numpy(np.stack([self.correspondence[sub_n]["P"] for sub_n in name]))
+                P = P.unsqueeze(1).repeat(1,8,1,1).reshape(-1,3,4)
+                points = points.unsqueeze(1).transpose(1,2)
+                new_pts = torch.bmm(P,points).squeeze(2)
+        else:
+            points = torch.transpose(points,0,1).double()
+            P = torch.from_numpy(self.correspondence[name]["P"]).double()
+            new_pts = torch.matmul(P,points).transpose(0,1)
         
         # divide each point 0th and 1st column by the 2nd column
         new_pts[:,0] = new_pts[:,0] / new_pts[:,2]
