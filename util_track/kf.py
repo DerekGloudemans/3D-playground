@@ -36,10 +36,11 @@ class Torch_KF(object):
         # initialize tensors
         self.meas_size = 5
         self.state_size = 6
-        self.t = 1/30.0
+        self.dt_default = 1/30.0
         self.device = device
         self.X = None
         self.D = None
+        self.T = None
         
         self.P0 = torch.zeros(self.state_size,self.state_size) # state covariance
         self.F = torch.zeros(self.state_size,self.state_size) # dynamical model
@@ -113,8 +114,18 @@ class Torch_KF(object):
         self.mu_Q = self.mu_Q.to(device).float()
         self.mu_R = self.mu_R.to(device).float()
         #self.mu_R2 = self.mu_R.to(device).float()
+    
+   
+    
+    def get_dt(self, time):
+        """
+        Given a time, computes dt for each object in the filter
+        """
         
-    def add(self,detections,obj_ids,directions,init_speed = False,classes = None):
+        dt = time - self.T
+        return dt
+        
+    def add(self,detections,obj_ids,directions,times,init_speed = False,classes = None):
         """
         Description
         -----------
@@ -133,18 +144,22 @@ class Torch_KF(object):
             try:
                 newX[:,:self.meas_size] = torch.from_numpy(detections).to(self.device)
                 newD = torch.from_numpy(directions).to(self.device)
+                newT = torch.from_numpy(times).to(self.device)
             except:
                 newX[:,:self.meas_size] = detections.to(self.device)
                 newD = directions.to(self.device)
+                newT = times.to(self.device)
                 
         else: # case where velocity estimates are given
             try:
                 newX = torch.from_numpy(detections).to(device)
                 newD = directions.to(self.device)
+                newT = times.to(self.device)
 
             except:
                 newX = detections.to(self.device)
                 newD = directions.to(self.device)
+                newT = times.to(self.device)
 
         if init_speed:
             newV = self.mu_v.repeat(len(detections)).to(self.device)
@@ -166,14 +181,17 @@ class Torch_KF(object):
             self.X = torch.cat((self.X,newX), dim = 0)
             self.P = torch.cat((self.P,newP), dim = 0)
             self.D = torch.cat((self.D,newD), dim = 0)
+            self.T = torch.cat((self.T,newT), dim = 0)
         except:
             new_idx = 0
             self.X = newX.to(self.device).float()
             self.P = newP.to(self.device)
             self.D = newD.to(self.device)
+            self.T = newT.to(self.device)
+            
             
         # add obj_ids to dictionary
-        for id in obj_ids:
+        for idx,id in enumerate(obj_ids):
             self.obj_idxs[id] = new_idx
             new_idx = new_idx + 1
         
@@ -195,9 +213,13 @@ class Torch_KF(object):
                 self.obj_idxs[id] = None    
             keepers.sort()
             
+            for id in obj_ids.keys(): # Could throw list-related error?
+                del self.T[id]
+            
             self.X = self.X[keepers,:]
             self.P = self.P[keepers,:]
             self.D = self.D[keepers]
+            self.T = self.T[keepers]
             
             # since rows were deleted from X and P, shift idxs accordingly
             new_id = 0
@@ -205,6 +227,23 @@ class Torch_KF(object):
                 if self.obj_idxs[id] is not None:
                     self.obj_idxs[id] = new_id
                     new_id += 1
+    
+    def view(self,dt = None):
+        """
+        Predicts the state for the given or default dt, but does not update the object states within the filter
+        (i.e. non in-place version of predict)
+        """
+        if self.X is None or len(self.X) == 0:
+            return
+        
+        if dt is None:
+            dt = self.dt_default
+            
+        F_rep = self.F.unsqueeze(0).repeat(len(self.X),1,1)
+        F_rep[:,0,5] = self.D * dt
+        X_pred = torch.bmm(F_rep,self.X.unsqueeze(2)).squeeze(2)
+        return X_pred
+         
     
     def predict(self,dt = None):
         """
@@ -216,7 +255,7 @@ class Torch_KF(object):
             return
         
         if dt is None:
-            dt = self.t
+            dt = self.dt_default
             
         # here we use t and direction. We alter F such that x_dot is signed by direction
         # and corresponds to the timestep t
@@ -235,6 +274,11 @@ class Torch_KF(object):
         step3 = torch.bmm(step1,step2)
         step4 = self.Q.repeat(len(self.P),1,1)
         self.P = step3 + step4
+        
+        
+        self.T += dt # either dt is a single value, or dt is a vector of the same length as self.T
+        
+        # each item in F_rep[:,0,5] is associated with an obj_id -> we need to get the idea for each
         
         
     def update(self,detections,obj_ids,measurement_idx = 1):
@@ -322,13 +366,16 @@ class Torch_KF(object):
     #             out_dict[id] = self.X[idx,:].data.cpu().numpy()
     #     return out_dict        
 
-    def objs(self,with_direction = False):
+    def objs(self,with_direction = False,with_time = False):
         """
         Returns
         -------
         out_dict - dictionary
             Current state of each object indexed by obj_id (int)
         """
+        
+        if with_time:
+            times = {}
         
         out_dict = {}
         for id in self.obj_idxs:
@@ -338,6 +385,12 @@ class Torch_KF(object):
                     out_dict[id] = torch.cat((self.X[idx,:-1],self.D[idx:idx+1].float(),self.X[idx,-1:]),dim = 0).data.cpu().numpy()
                 else:
                     out_dict[id] = self.X[idx,:].data.cpu().numpy()
+                if with_time:
+                    times[id] = self.T[idx]
+        
+        if with_time:
+            return out_dict, times
+                
         return out_dict
 
 if __name__ == "__main__":
