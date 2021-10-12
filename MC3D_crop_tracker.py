@@ -93,10 +93,12 @@ class MC_Crop_Tracker():
         
         # for each sequence,open start a FrameLoader process
         self.cameras = []
+        self.sequences = []
         self.loaders = []
         for sequence in sequences:
             # get camera name
             self.cameras.append(re.search("p\dc\d",sequence).group(0))
+            self.sequences.append(re.search("p\dc\d_\d",sequence).group(0) +"_4k")
             l = FrameLoader(sequence,self.device,self.d,self.s,downsample = 1)
             self.loaders.append(l)
         
@@ -155,6 +157,10 @@ class MC_Crop_Tracker():
         self.idx_colors = np.random.rand(10000,3)
         self.cutoff_frame = early_cutoff
         
+        #temporary timestamp overwriting
+        with open("/home/worklab/Documents/derek/3D-playground/final_saved_alpha_timestamps.cpkl","rb") as f:
+            self.ts = pickle.load(f)
+        
         print("Initialized MC Crop Tracker for {} sequences".format(len(self.cameras)))
         
     def __next__(self):
@@ -162,6 +168,24 @@ class MC_Crop_Tracker():
         self.frame_num = next_frames[0][0]
         self.frames = torch.stack([chunk[1][0] for chunk in next_frames])
         self.original_ims = [chunk[1][2] for chunk in next_frames]
+        
+        frame_nums = [chunk[0] for chunk in next_frames]
+        self.timestamps = [self.ts[self.sequences[idx]][fn] for idx,fn in enumerate(frame_nums)]
+        
+    def time_sync_cameras(self):
+        try:
+            latest = max(self.timestamps)
+            for i in range(len(self.timestamps)):
+                while latest - self.timestamps[i]  > 1/30.0:
+                    fr_num,(fr,_,orig_im) = next(self.loaders[i])
+                    self.frames[i] = fr
+                    self.original_ims[i] = orig_im
+                    self.timestamps[i] = self.ts[self.sequences[i]][fr_num]
+                    # if fr_num == -1 or fr_num > self.frame_num:
+                    #     self.frame_num = fr_num
+                    print("Skipped a frame for camera {} to synchronize.".format(self.cameras[i]))
+        except TypeError:
+            pass # None for timestamp value
         
      
     def parse_detections(self,scores,labels,boxes,camera_idxs,n_best = 200,perform_nms = True,refine_height = False):
@@ -688,6 +712,7 @@ class MC_Crop_Tracker():
         
         self.start_time = time.time()
         next(self) # advances frame
+        self.time_sync_cameras()
 
         
         while self.frame_num != -1:            
@@ -778,6 +803,7 @@ class MC_Crop_Tracker():
             # load next frame  
             start = time.time()
             next(self)
+            self.time_sync_cameras()
             torch.cuda.synchronize()
             self.time_metrics["load"] = time.time() - start
             torch.cuda.empty_cache()
