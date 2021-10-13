@@ -160,27 +160,37 @@ class MC_Crop_Tracker():
         #temporary timestamp overwriting
         with open("/home/worklab/Documents/derek/3D-playground/final_saved_alpha_timestamps.cpkl","rb") as f:
             self.ts = pickle.load(f)
+        self.timestamps = [0 for i in self.loaders]
         
         print("Initialized MC Crop Tracker for {} sequences".format(len(self.cameras)))
         
     def __next__(self):
         next_frames = [next(l) for l in self.loaders]
-        self.frame_num = next_frames[0][0]
-        self.frames = torch.stack([chunk[1][0] for chunk in next_frames])
-        self.original_ims = [chunk[1][2] for chunk in next_frames]
         
         frame_nums = [chunk[0] for chunk in next_frames]
-        self.timestamps = [self.ts[self.sequences[idx]][fn] for idx,fn in enumerate(frame_nums)]
+        self.frames = torch.stack([chunk[1] for chunk in next_frames])
+        self.original_ims = [chunk[2] for chunk in next_frames]
+        self.frame_num = frame_nums[0]
+        
+        prev_ts = self.timestamps
+        self.timestamps = [chunk[3] for chunk in next_frames]
+        for idx in range(len(self.timestamps)):
+            if self.timestamps[idx] is None:
+                self.timestamps[idx] = prev_ts[idx] + 1/30.0
+                
+                
         
     def time_sync_cameras(self):
         try:
             latest = max(self.timestamps)
             for i in range(len(self.timestamps)):
-                while latest - self.timestamps[i]  > 1/30.0:
-                    fr_num,(fr,_,orig_im) = next(self.loaders[i])
+                while latest - self.timestamps[i]  >= 0.03:
+                    fr_num,fr,orig_im,timestamp = next(self.loaders[i])
                     self.frames[i] = fr
                     self.original_ims[i] = orig_im
                     self.timestamps[i] = self.ts[self.sequences[i]][fr_num]
+                    if self.timestamps[i] is None:
+                        self.timestamps[i] = self.ts[self.sequences[i]][fr_num - 1] + 1/30.0
                     # if fr_num == -1 or fr_num > self.frame_num:
                     #     self.frame_num = fr_num
                     print("Skipped a frame for camera {} to synchronize.".format(self.cameras[i]))
@@ -241,7 +251,7 @@ class MC_Crop_Tracker():
             refined_heights = self.hg.height_from_template(repro_boxes,heights,detections)
             boxes = self.hg.im_to_state(detections,heights = refined_heights,name = cam_list)
         
-        if perform_nms:
+        if False: # we don't do this because detections are at different times from different cameras
             idxs = self.space_nms(boxes,scores,threshold = self.phi_nms_space)
             labels = labels[idxs]
             boxes = boxes[idxs]
@@ -250,7 +260,7 @@ class MC_Crop_Tracker():
         
         return boxes, labels, scores, camera_idxs
  
-    def manage_tracks(self,detections,matchings,pre_ids,labels,scores,mean_object_sizes = True):
+    def manage_tracks(self,detections,matchings,pre_ids,labels,scores,new_time,mean_object_sizes = True):
         """
         Updates each detection matched to an existing tracklet, adds new tracklets 
         for unmatched detections, and increments counters / removes tracklets not matched
@@ -274,7 +284,8 @@ class MC_Crop_Tracker():
             update_confs.append(scores[b])
             
             self.fsld[pre_ids[a]] = 0 # fsld = 0 since this id was detected this frame
-        
+            self.updated_this_frame.append(pre_ids[a])
+            
         if len(update_array) > 0:    
             self.filter.update(update_array,update_ids)
             
@@ -305,6 +316,7 @@ class MC_Crop_Tracker():
                 self.all_tracks[self.next_obj_id] = np.zeros([self.n_frames,self.state_size])
                 self.all_classes[self.next_obj_id] = np.zeros(8)
                 self.all_confs[self.next_obj_id] = []
+                self.updated_this_frame.append(self.next_obj_id)
                 
                 cls = int(labels[i])
                 self.all_classes[self.next_obj_id][cls] += 1
@@ -313,22 +325,22 @@ class MC_Crop_Tracker():
                 
                 self.next_obj_id += 1
                 cur_row += 1
-        if len(new_array) > 0:      
+        if len(new_array) > 0:   
+            
+            new_times = np.array([new_time for i in new_array])
             if mean_object_sizes:
-                self.filter.add(new_array,new_ids,new_directions,init_speed = True,classes = new_classes)
+                self.filter.add(new_array,new_ids,new_directions,new_times,init_speed = True,classes = new_classes)
             else:
-                self.filter.add(new_array,new_ids,new_directions,init_speed = True)
+                self.filter.add(new_array,new_ids,new_directions,new_times,init_speed = True)
         
-        # 3. For each untracked object, increment fsld        
-        for i in range(len(pre_ids)):
-            try:
-                if i not in matchings[:,0]:
-                    self.fsld[pre_ids[i]] += 1
-            except:
-                self.fsld[pre_ids[i]] += 1
+    def increment_fslds(self,undetected,pre_ids):
+        start = time.time()
         
+        # For each untracked object, increment fsld        
+        for id in undetected:
+            self.fsld[id] += 1
         
-        # 4. Remove lost objects
+        #  Remove lost objects
         removals = []
         for id in pre_ids:
             if self.fsld[id] >= self.f_max and len(self.all_classes[id]) < self.f_init:  # after a burn-in period, objects are no longer removed unless they leave frame
@@ -615,7 +627,10 @@ class MC_Crop_Tracker():
             # plot detection bboxes
             if len(detections) > 0 and not single_box:
                 im = self.hg.plot_boxes(im, self.hg.state_to_im(detections),name = cam_id)
-              
+            
+            dts = self.filter.get_dt(self.timestamps[im_idx])
+            post_locations = self.filter.view(with_direction = True,dt = dts)
+            
             ids = []
             boxes = []
             classes = []
@@ -701,7 +716,9 @@ class MC_Crop_Tracker():
         
         cv2.imshow("frame",cat_im)
         cv2.setWindowTitle("frame",str(frame))
-        cv2.waitKey(1)
+        key = cv2.waitKey(1)
+        if key == ord("p"):
+            cv2.waitKey(0)
         
         self.writers[-1](cat_im)
         
@@ -713,27 +730,11 @@ class MC_Crop_Tracker():
         self.start_time = time.time()
         next(self) # advances frame
         self.time_sync_cameras()
-
+        self.clock_time = max(self.timestamps)
         
         while self.frame_num != -1:            
             
-            # predict next object locations
-            start = time.time()
             
-            try: # in the case that there are no active objects will throw exception
-                self.filter.predict()
-                pre_locations = self.filter.objs(with_direction = True)
-            except:
-                pre_locations = []        
-            pre_ids = []
-            pre_loc = []
-            for id in pre_locations:
-                pre_ids.append(id)
-                pre_loc.append(pre_locations[id])
-            pre_loc = np.array(pre_loc)  
-            pre_loc = torch.from_numpy(pre_loc)
-            
-            self.time_metrics['predict'] += time.time() - start
         
             
             if self.frame_num % self.d == 0: # full frame detection
@@ -766,24 +767,63 @@ class MC_Crop_Tracker():
                     cv2.waitKey(0)
                     cv2.destroyAllWindows()
                 
-                # match using Hungarian Algorithm        
-                start = time.time()
-                # matchings[i] = [a,b] where a is index of pre_loc and b is index of detection
-                matchings = self.match_hungarian(pre_loc,detections)
-                self.time_metrics['match'] += time.time() - start
-                
-                # Update tracked objects
-                self.manage_tracks(detections,matchings,pre_ids,labels,scores)
-        
+                # For each camera, roll filter forward, match, and update
+                order = np.array(self.timestamps).argsort()
+                self.updated_this_frame = []
+                for o_idx in order:
+                    
+                    # roll filter forward to this timestep
+                    start = time.time()
+            
+                    try: # in the case that there are no active objects will throw exception
+                        dts = self.filter.get_dt(self.timestamps[o_idx]) # necessary dt for each object to get to timestamp time
+                        self.filter.predict(dt = dts) # predict states at this time
+                        print (dts)
+                        pre_locations = self.filter.objs(with_direction = True)
+                    except TypeError:
+                        pre_locations = []        
+                    pre_ids = []
+                    pre_loc = []
+                    for id in pre_locations:
+                        pre_ids.append(id)
+                        pre_loc.append(pre_locations[id])
+                    pre_loc = torch.from_numpy(np.array(pre_loc))
+                    
+                    self.time_metrics['predict'] += time.time() - start
+                    
+                    # get detections from this camera
+                    relevant_idxs = torch.where(camera_idxs == o_idx)
+                    cam_detections = detections[relevant_idxs]
+                    cam_labels = labels[relevant_idxs]
+                    cam_scores = scores[relevant_idxs]
+                    
+                    # get matchings
+                    start = time.time()
+                    # matchings[i] = [a,b] where a is index of pre_loc and b is index of detection
+                    matchings = self.match_hungarian(pre_loc,cam_detections)
+                    self.time_metrics['match'] += time.time() - start
+
+                    # update
+                    self.manage_tracks(cam_detections,matchings,pre_ids,cam_labels,cam_scores,self.timestamps[o_idx])
+
+                # for objects not detected in any camera view
+                updated = list(set(self.updated_this_frame))
+                undetected = []
+                for id in pre_ids:
+                    if id not in updated:
+                        undetected.append(id)
+                self.increment_fslds(pre_ids,undetected)
+
                 # remove overlapping objects and anomalies
                 self.remove_overlaps()
                 self.remove_anomalies(x_bounds = self.x_range)
 
                 
-            # get all object locations and store in output dict
+            # get all object locations at set clock time and store in output dict
             start = time.time()
             try:
-                post_locations = self.filter.objs(with_direction = True)
+                dts = self.filter.get_dt(self.clock_time)
+                post_locations = self.filter.view(with_direction = True,dt = dts)
             except:
                 post_locations = {}
             for id in post_locations:
@@ -797,6 +837,7 @@ class MC_Crop_Tracker():
             # Plot
             start = time.time()
             if self.PLOT:
+                print(self.timestamps)
                 self.plot(detections,post_locations,self.all_classes,pre_locations = pre_loc,label_len = 5)
             self.time_metrics['plot'] += time.time() - start
        
@@ -807,6 +848,9 @@ class MC_Crop_Tracker():
             torch.cuda.synchronize()
             self.time_metrics["load"] = time.time() - start
             torch.cuda.empty_cache()
+            
+            # increment clock time at fixed rate,regardless of actual frame timestamps
+            self.clock_time += 1/30.0
             
             fps = self.frame_num / (time.time() - self.start_time)
             fps_noload = self.frame_num / (time.time() - self.start_time - self.time_metrics["load"] - self.time_metrics["plot"])
@@ -839,10 +883,10 @@ class MC_Crop_Tracker():
 if __name__ == "__main__":
     
     # inputs
-    sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/p1c2_0.mp4",
-                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/p1c3_0.mp4",
-                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/p1c4_0.mp4",
-                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/p1c5_0.mp4"]
+    sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c2_0_4k.mp4",
+                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4"]#,
+                 # "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/p1c4_0.mp4",
+                 # "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/p1c5_0.mp4"]
     det_cp = "/home/worklab/Documents/derek/3D-playground/cpu_15000gt_3D.pt"
     
     kf_param_path = "kf_params_naive.cpkl"

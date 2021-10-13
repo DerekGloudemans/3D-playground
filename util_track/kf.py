@@ -165,7 +165,7 @@ class Torch_KF(object):
             newV = self.mu_v.repeat(len(detections)).to(self.device)
             newX[:,-1] = newV
                 
-        newP = self.P0.repeat(len(obj_ids),1,1)
+        newP = self.P0.repeat(len(obj_ids),1,1).double()
 
         if classes is not None:
             # overwrite l,w,h with class mean values
@@ -213,9 +213,6 @@ class Torch_KF(object):
                 self.obj_idxs[id] = None    
             keepers.sort()
             
-            for id in obj_ids.keys(): # Could throw list-related error?
-                del self.T[id]
-            
             self.X = self.X[keepers,:]
             self.P = self.P[keepers,:]
             self.D = self.D[keepers]
@@ -228,10 +225,10 @@ class Torch_KF(object):
                     self.obj_idxs[id] = new_id
                     new_id += 1
     
-    def view(self,dt = None):
+    def view(self,dt = None,with_direction = False):
         """
         Predicts the state for the given or default dt, but does not update the object states within the filter
-        (i.e. non in-place version of predict)
+        (i.e. non in-place version of predict())
         """
         if self.X is None or len(self.X) == 0:
             return
@@ -242,7 +239,16 @@ class Torch_KF(object):
         F_rep = self.F.unsqueeze(0).repeat(len(self.X),1,1)
         F_rep[:,0,5] = self.D * dt
         X_pred = torch.bmm(F_rep,self.X.unsqueeze(2)).squeeze(2)
-        return X_pred
+
+        out_dict = {}
+        for id in self.obj_idxs:
+            idx = self.obj_idxs[id]
+            if idx is not None:
+                if with_direction:
+                    out_dict[id] = torch.cat((X_pred[idx,:-1],self.D[idx:idx+1].float(),X_pred[idx,-1:]),dim = 0).data.cpu().numpy()
+                else:
+                    out_dict[id] = self.X[idx,:].data.cpu().numpy()
+        return out_dict
          
     
     def predict(self,dt = None):
@@ -269,14 +275,21 @@ class Torch_KF(object):
         
         # update P --> P = FPF^(-1) + Q --> [nx7x7] = [nx7x7] bx [nx7x7] bx [nx7x7] + [n+7x7]
         #F_rep = self.F.unsqueeze(0).repeat(len(self.P),1,1)
-        step1 = torch.bmm(F_rep,self.P)
+        step1 = torch.bmm(F_rep,self.P.float())
         step2 = F_rep.transpose(1,2)
         step3 = torch.bmm(step1,step2)
         step4 = self.Q.repeat(len(self.P),1,1)
+        
+        # scale Q by the timestamp, assuming model error is linearly correlated to dt
+        try:
+            step4 = step4 * dt/self.dt_default
+        except:
+            step4 = step4 * dt.unsqueeze(1).unsqueeze(2).repeat(1,self.Q.shape[1],self.Q.shape[2]) / self.dt_default
+            
         self.P = step3 + step4
         
         
-        self.T += dt # either dt is a single value, or dt is a vector of the same length as self.T
+        self.T += dt  # either dt is a single value, or dt is a vector of the same length as self.T
         
         # each item in F_rep[:,0,5] is associated with an obj_id -> we need to get the idea for each
         
@@ -315,7 +328,7 @@ class Torch_KF(object):
         # get relevant portions of X and P
         relevant = [self.obj_idxs[id] for id in obj_ids]
         X_up = self.X[relevant,:]
-        P_up = self.P[relevant,:,:]
+        P_up = self.P[relevant,:,:].float()
         
         # state innovation --> y = z - XHt --> mx4 = mx4 - [mx7] x [4x7]t  
         try:
@@ -349,7 +362,7 @@ class Torch_KF(object):
         
         # store updated values
         self.X[relevant,:] = X_up
-        self.P[relevant,:,:] = P_up
+        self.P[relevant,:,:] = P_up.double()
     
     # def objs(self,with_direction = False):
     #     """

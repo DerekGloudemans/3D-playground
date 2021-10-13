@@ -18,6 +18,7 @@ import torch
 
 from torchvision.transforms import functional as F
 import torch.multiprocessing as mp
+import timestamp_utilities as tsu
 
 
 class FrameLoader():
@@ -125,13 +126,12 @@ class FrameLoader():
         
             frame = self.queue.get(timeout = 10)
             self.frame_idx = frame[0]
-            frame = frame[1:]
-            return self.frame_idx, frame
+            return  frame
         
         else:
             self.worker.terminate()
             self.worker.join()
-            return -1,(None,None,None)
+            return -1,None,None,None
 
 def load_to_queue(image_queue,files,det_step,init_frames,device,queue_size,downsample):
     """
@@ -205,6 +205,11 @@ def load_to_queue(image_queue,files,det_step,init_frames,device,queue_size,downs
         
 def load_to_queue_video(image_queue,sequence,device,queue_size):
     
+    checksum_path="/home/worklab/Documents/derek/I24-video-processing/I24-video-ingest/resources/timestamp_pixel_checksum_6.pkl"
+    geom_path="/home/worklab/Documents/derek/I24-video-processing/I24-video-ingest/resources/timestamp_geometry_4K.pkl"
+    checksums = tsu.get_precomputed_checksums(checksum_path)
+    geom = tsu.get_timestamp_geometry(geom_path)
+    
     cap = cv2.VideoCapture(sequence)
     
     frame_idx = 0    
@@ -222,9 +227,11 @@ def load_to_queue_video(image_queue,sequence,device,queue_size):
                 break
             else:
                 
-                # timestamp = parse_frame_timestamp(frame_pixels = original_im, timestamp_geometry = geom, precomputed_checksums = checksums)
-                # if timestamp[0] is None:
-                #     timestamp = None
+                timestamp = tsu.parse_frame_timestamp(frame_pixels = original_im, timestamp_geometry = geom, precomputed_checksums = checksums)
+                if timestamp[0] is None:
+                    timestamp = None
+                else:
+                    timestamp = timestamp[0]
                 
                 original_im = cv2.resize(original_im,(1920,1080))
                 im = F.to_tensor(original_im)
@@ -233,7 +240,7 @@ def load_to_queue_video(image_queue,sequence,device,queue_size):
                 # store preprocessed image, dimensions and original image
                 im = im.to(device)
                 dim = None
-                frame = (frame_idx,im,dim,original_im)
+                frame = (frame_idx,im,original_im,timestamp)
              
                 # append to queue
                 image_queue.put(frame)       
