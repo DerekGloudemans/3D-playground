@@ -57,21 +57,21 @@ class MC_Crop_Tracker():
         """
         
         # parse params
-        self.sigma_d = params['sigma_d'] if 'sigma_d' in params else 0.2                        # minimum detection confidence
-        self.sigma_min =  params['sigma_min'] if 'sigma_min' in params else 0.9                 # we require an object to have at least 3 confidences > sigma_min within f_init frames to persist
+        self.sigma_d = params['sigma_d'] if 'sigma_d' in params else 0.4                        # minimum detection confidence
+        self.sigma_min =  params['sigma_min'] if 'sigma_min' in params else 0.7                 # we require an object to have at least 3 confidences > sigma_min within f_init frames to persist
         self.phi_nms_space = params['phi_nms_space'] if 'phi_nms_space' in params else 0.2      # overlapping objects are pruned by NMS during detection parsing
-        self.phi_nms_im =  params['phi_nms_im'] if 'phi_nms_im' in params else 0.4        # overlapping objects are possibly pruned by NMS during detection parsing
-        self.phi_match =   params['phi_match'] if 'phi_match' in params else 0.05                # required IOU for detection -> tracklet match
+        self.phi_nms_im =  params['phi_nms_im'] if 'phi_nms_im' in params else 0.3              # overlapping objects are possibly pruned by NMS during detection parsing
+        self.phi_match =   params['phi_match'] if 'phi_match' in params else 0.1                # required IOU for detection -> tracklet match
         self.phi_over =  params['phi_over'] if 'phi_over' in params else 0.1                    # after update overlapping objects are pruned 
         
         self.W = params['W'] if 'W' in params else 0.4                                          # weights (1-W)*IOU + W*conf for bounding box selection from cropper 
         self.f_init =  params['f_init'] if 'f_init' in params else 5                            # number of frames before objects are considered permanent 
-        self.f_max = params['f_max'] if 'f_max' in params else 3             
+        self.f_max = params['f_max'] if 'f_max' in params else 5             
         self.cs = params['cs'] if 'cs' in params else 112                                       # size of square crops for crop detector           
         self.d = params['d'] if 'd' in params else 1                                            # dense detection frequency (1 is every frame, -1 is never, 2 is every 2 frames, etc)
         self.s = params['s'] if 's' in params else 1                                            # measurement frequency (if 1, every frame, if 2, measure every 2 frames, etc)
         self.q = params["q"] if "q" in params else 1                                            # target number of measurement queries per object per frame (assuming more than one camera is available)
-        self.max_size = params['max_size'] if 'max_size' in params else torch.tensor([75,15,17])# max object size (L,W,H) in feet
+        self.max_size = params['max_size'] if 'max_size' in params else torch.tensor([85,15,15])# max object size (L,W,H) in feet
         self.x_range = params["x_range"] if 'x_range' in params else [0,2000]                     # track objects until they exit this range of state space
         
         # get GPU
@@ -252,7 +252,7 @@ class MC_Crop_Tracker():
             refined_heights = self.hg.height_from_template(repro_boxes,heights,detections)
             boxes = self.hg.im_to_state(detections,heights = refined_heights,name = cam_list)
         
-        if False: # we don't do this because detections are at different times from different cameras
+        if perform_nms: # we don't do this because detections are at different times from different cameras
             idxs = self.space_nms(boxes,scores,threshold = self.phi_nms_space)
             labels = labels[idxs]
             boxes = boxes[idxs]
@@ -347,7 +347,7 @@ class MC_Crop_Tracker():
         #  Remove lost objects
         removals = []
         for id in pre_ids:
-            if self.fsld[id] >= self.f_max and len(self.all_classes[id]) < self.f_init:  # after a burn-in period, objects are no longer removed unless they leave frame
+            if self.fsld[id] >= self.f_max :#and len(self.all_classes[id]) < self.f_init:  # after a burn-in period, objects are no longer removed unless they leave frame
                 removals.append(id)
                 self.fsld.pop(id,None) # remove key from fsld
         if len(removals) > 0:
@@ -366,7 +366,8 @@ class MC_Crop_Tracker():
         
         if self.phi_over > 0:
             removals = []
-            objs = self.filter.objs(with_direction = True)
+            dts = self.filter.get_dt(max(self.timestamps))
+            objs = self.filter.view(with_direction = True, dt = dts)
             if len(objs) == 0:
                 return
             
@@ -403,17 +404,19 @@ class MC_Crop_Tracker():
         """
         max_sizes = self.max_size
         removals = []
-        objs = self.filter.objs(with_direction = True)
+        dts = self.filter.get_dt(max(self.timestamps))
+        objs = self.filter.view(with_direction = True, dt = dts)
         for i in objs:
             obj = objs[i]
             if obj[1] > 120 or obj [1] < -10:
                 removals.append(i)
             elif obj[2] > max_sizes[0] or obj[2] < 0 or obj[3] > max_sizes[1] or obj[3] < 0 or obj[4] > max_sizes[2] or obj[4] < 0:
                 removals.append(i)
-            elif obj[5] > 150 or obj[5] < -150:
+            elif obj[6] > 150 or obj[6] < -150:
                 removals.append(i)      
             elif obj[0] < x_bounds[0] or obj[0] > x_bounds[1]:
                 removals.append(i)
+            
         # ## TODO - we'll need to check to make sure that objects are outside of all cameras!
         # keys = list(objs.keys())
         # if len(keys) ==0:
@@ -585,7 +588,7 @@ class MC_Crop_Tracker():
         # remove any matches too far away
         for i in range(len(matchings)):
             try:
-                if dist[i,matchings[i]] > self.matching_cutoff:
+                if dist[i,matchings[i]] > (1-self.phi_match):
                     matchings[i] = -1
             except:
                 pass
@@ -597,7 +600,7 @@ class MC_Crop_Tracker():
                 out_matchings.append([i,matchings[i]])#,dist[i,matchings[i]]])
         return np.array(out_matchings)
     
-    def plot(self,detections,post_locations,all_classes,frame = None,pre_locations = None,label_len = 1,single_box = True):
+    def plot(self,detections,camera_idxs,post_locations,all_classes,frame = None,pre_locations = None,label_len = 1,single_box = True, ):
         """
         Description
         -----------
@@ -629,8 +632,15 @@ class MC_Crop_Tracker():
             cam_id = self.cameras[im_idx]
                      
             # plot detection bboxes
-            if len(detections) > 0 and not single_box:
-                im = self.hg.plot_boxes(im, self.hg.state_to_im(detections),name = cam_id)
+            if len(detections) > 0:
+                
+                cam_detections = []
+                for idx in range(len(detections)):
+                    if camera_idxs[idx] == im_idx:
+                        cam_detections.append(detections[idx])
+                if len(cam_detections) > 0:
+                    cam_detections = torch.stack(cam_detections)
+                    im = self.hg.plot_boxes(im, self.hg.state_to_im(cam_detections,name = cam_id),thickness = 1, color = (0,0,255))
             
             dts = self.filter.get_dt(self.timestamps[im_idx])
             post_locations = self.filter.view(with_direction = True,dt = dts)
@@ -656,6 +666,20 @@ class MC_Crop_Tracker():
                 im = self.hg.plot_boxes(im,boxes,color = (0.6,0.8,0),thickness = tn)
             
             im2 = im.copy()
+            
+            
+            
+            # plot time unadjusted boxes
+            post_locations = self.filter.objs(with_direction = True)
+            boxes = []
+            for id in post_locations:
+                boxes.append(post_locations[id][0:6])
+            if len(boxes) > 0:
+                boxes = torch.from_numpy(np.stack(boxes))
+                boxes = self.hg.state_to_im(boxes,name = cam_id)
+                im = self.hg.plot_boxes(im,boxes,color = (0.2,0.2,0.2),thickness = 1)
+            
+            
             
             for i in range(len(boxes)):
                 # plot label
@@ -823,7 +847,7 @@ class MC_Crop_Tracker():
 
                 # remove overlapping objects and anomalies
                 self.remove_overlaps()
-                self.remove_anomalies(x_bounds = self.x_range)
+                #self.remove_anomalies(x_bounds = self.x_range)
 
                 
             # get all object locations at set clock time and store in output dict
@@ -845,7 +869,7 @@ class MC_Crop_Tracker():
             start = time.time()
             if self.PLOT:
                 print(self.timestamps)
-                self.plot(detections,post_locations,self.all_classes,pre_locations = pre_loc,label_len = 5)
+                self.plot(detections,camera_idxs,post_locations,self.all_classes,pre_locations = pre_loc,label_len = 5)
             self.time_metrics['plot'] += time.time() - start
        
             # load next frame  
@@ -935,8 +959,7 @@ if __name__ == "__main__":
             x_max = rmax
     
     params = {
-        "x_range": [x_min,x_max],
-        "sigma_d": 0.5
+        "x_range": [x_min,x_max]
         }
 
     
