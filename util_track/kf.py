@@ -122,8 +122,11 @@ class Torch_KF(object):
         Given a time, computes dt for each object in the filter
         """
         
-        dt = time - self.T
-        return dt
+        try:
+            dt = time - self.T
+            return dt
+        except TypeError:
+            return None
         
     def add(self,detections,obj_ids,directions,times,init_speed = False,classes = None):
         """
@@ -165,7 +168,7 @@ class Torch_KF(object):
             newV = self.mu_v.repeat(len(detections)).to(self.device)
             newX[:,-1] = newV
                 
-        newP = self.P0.repeat(len(obj_ids),1,1).double()
+        newP = self.P0.repeat(len(obj_ids),1,1)
 
         if classes is not None:
             # overwrite l,w,h with class mean values
@@ -231,7 +234,7 @@ class Torch_KF(object):
         (i.e. non in-place version of predict())
         """
         if self.X is None or len(self.X) == 0:
-            return
+            return {}
         
         if dt is None:
             dt = self.dt_default
@@ -362,7 +365,7 @@ class Torch_KF(object):
         
         # store updated values
         self.X[relevant,:] = X_up
-        self.P[relevant,:,:] = P_up.double()
+        self.P[relevant,:,:] = P_up
     
     # def objs(self,with_direction = False):
     #     """

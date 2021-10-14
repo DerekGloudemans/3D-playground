@@ -172,7 +172,7 @@ class MC_Crop_Tracker():
         self.original_ims = [chunk[2] for chunk in next_frames]
         self.frame_num = frame_nums[0]
         
-        prev_ts = self.timestamps
+        prev_ts = self.timestamps.copy()
         self.timestamps = [chunk[3] for chunk in next_frames]
         for idx in range(len(self.timestamps)):
             if self.timestamps[idx] is None:
@@ -181,6 +181,7 @@ class MC_Crop_Tracker():
                 
         
     def time_sync_cameras(self):
+        
         try:
             latest = max(self.timestamps)
             for i in range(len(self.timestamps)):
@@ -260,7 +261,7 @@ class MC_Crop_Tracker():
         
         return boxes, labels, scores, camera_idxs
  
-    def manage_tracks(self,detections,matchings,pre_ids,labels,scores,new_time,mean_object_sizes = True):
+    def manage_tracks(self,detections,matchings,pre_ids,labels,scores,detection_times,mean_object_sizes = True):
         """
         Updates each detection matched to an existing tracklet, adds new tracklets 
         for unmatched detections, and increments counters / removes tracklets not matched
@@ -304,6 +305,7 @@ class MC_Crop_Tracker():
         new_directions = np.zeros([len(detections) - len(matchings)])
         new_ids = []
         new_classes = []
+        new_times = []
         cur_row = 0
         for i in range(len(detections)):
             if len(matchings) == 0 or i not in matchings[:,1]:
@@ -311,7 +313,8 @@ class MC_Crop_Tracker():
                 new_ids.append(self.next_obj_id)
                 new_array[cur_row,:] = detections[i,:5]
                 new_directions[cur_row] = detections[i,5]
-
+                new_times.append(detection_times[i])
+                
                 self.fsld[self.next_obj_id] = 0
                 self.all_tracks[self.next_obj_id] = np.zeros([self.n_frames,self.state_size])
                 self.all_classes[self.next_obj_id] = np.zeros(8)
@@ -327,7 +330,8 @@ class MC_Crop_Tracker():
                 cur_row += 1
         if len(new_array) > 0:   
             
-            new_times = np.array([new_time for i in new_array])
+            #new_times = np.array([new_time for i in new_array])
+            new_times = np.array(new_times)
             if mean_object_sizes:
                 self.filter.add(new_array,new_ids,new_directions,new_times,init_speed = True,classes = new_classes)
             else:
@@ -424,9 +428,10 @@ class MC_Crop_Tracker():
         #         removals.append(keys[i])
         #     if obj[0,1] < 0 and obj[2,1] < 0 or obj[0,1] > 1080 and obj[2,1] > 1080:
         #         removals.append(keys[i])
-                
-        removals = list(set(removals))
-        self.filter.remove(removals)         
+        
+        if len(removals) > 0:
+            removals = list(set(removals))
+            self.filter.remove(removals)         
     
     
     def iou(self,a,b):
@@ -527,9 +532,8 @@ class MC_Crop_Tracker():
         
         Returns
         -------
-        out_matchings - np.array [l]
-            index i corresponds to second frame object matched to first frame object i
-            l is not necessarily equal to either n or m (can have unmatched object from both frames)
+        out_matchings - np.array [l,3] with first frame obj, second frame obj, distance
+            
         
         """
         
@@ -590,7 +594,7 @@ class MC_Crop_Tracker():
         out_matchings = []
         for i in range(len(matchings)):
             if matchings[i] != -1:
-                out_matchings.append([i,matchings[i]])
+                out_matchings.append([i,matchings[i]])#,dist[i,matchings[i]]])
         return np.array(out_matchings)
     
     def plot(self,detections,post_locations,all_classes,frame = None,pre_locations = None,label_len = 1,single_box = True):
@@ -767,44 +771,47 @@ class MC_Crop_Tracker():
                     cv2.waitKey(0)
                     cv2.destroyAllWindows()
                 
-                # For each camera, roll filter forward, match, and update
+                # For each camera, view objects at timestamp, match, and update
+                all_matches = []
                 order = np.array(self.timestamps).argsort()
                 self.updated_this_frame = []
-                for o_idx in order:
+               
                     
-                    # roll filter forward to this timestep
-                    start = time.time()
-            
-                    try: # in the case that there are no active objects will throw exception
-                        dts = self.filter.get_dt(self.timestamps[o_idx]) # necessary dt for each object to get to timestamp time
-                        self.filter.predict(dt = dts) # predict states at this time
-                        print (dts)
-                        pre_locations = self.filter.objs(with_direction = True)
-                    except TypeError:
-                        pre_locations = []        
-                    pre_ids = []
-                    pre_loc = []
-                    for id in pre_locations:
-                        pre_ids.append(id)
-                        pre_loc.append(pre_locations[id])
-                    pre_loc = torch.from_numpy(np.array(pre_loc))
-                    
-                    self.time_metrics['predict'] += time.time() - start
-                    
-                    # get detections from this camera
-                    relevant_idxs = torch.where(camera_idxs == o_idx)
-                    cam_detections = detections[relevant_idxs]
-                    cam_labels = labels[relevant_idxs]
-                    cam_scores = scores[relevant_idxs]
-                    
-                    # get matchings
-                    start = time.time()
-                    # matchings[i] = [a,b] where a is index of pre_loc and b is index of detection
-                    matchings = self.match_hungarian(pre_loc,cam_detections)
-                    self.time_metrics['match'] += time.time() - start
+                # roll filter forward to this timestep
+                start = time.time()
+        
+                try: # in the case that there are no active objects will throw exception
+                    avg_time = sum(self.timestamps) / len(self.timestamps)
+                    dts = self.filter.get_dt(avg_time) # necessary dt for each object to get to timestamp time
+                    pre_locations = self.filter.view(with_direction = True,dt = dts)
+                except TypeError:
+                    pre_locations = {}        
+                pre_ids = []
+                pre_loc = []
+                for id in pre_locations:
+                    pre_ids.append(id)
+                    pre_loc.append(pre_locations[id])
+                pre_loc = torch.from_numpy(np.array(pre_loc))
+                self.time_metrics['predict'] += time.time() - start
+                
+                # get matchings
+                start = time.time()
+                # matchings[i] = [a,b,dist] where a is index of pre_loc and b is index of detection
+                matchings = self.match_hungarian(pre_loc,detections)
 
-                    # update
-                    self.manage_tracks(cam_detections,matchings,pre_ids,cam_labels,cam_scores,self.timestamps[o_idx])
+                self.time_metrics['match'] += time.time() - start
+                
+                # for each match, we roll the relevant object time forward to the time of the detection
+                # select the time for each relevant detection
+                    
+                
+                if len(matchings) > 0: # we only need to predict object locations for objects with updates
+                    match_times = [self.timestamps[camera_idxs[match[1]]] for match in matchings]
+                    dts = self.filter.get_dt(match_times)
+                    self.filter.predict(dt = dts)
+                    
+                detection_times = [self.timestamps[cam_idx] for cam_idx in camera_idxs]
+                self.manage_tracks(detections,matchings,pre_ids,labels,scores,detection_times)
 
                 # for objects not detected in any camera view
                 updated = list(set(self.updated_this_frame))
@@ -884,9 +891,9 @@ if __name__ == "__main__":
     
     # inputs
     sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c2_0_4k.mp4",
-                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4"]#,
-                 # "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/p1c4_0.mp4",
-                 # "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/p1c5_0.mp4"]
+                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4",
+                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",
+                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c5_0_4k.mp4"]
     det_cp = "/home/worklab/Documents/derek/3D-playground/cpu_15000gt_3D.pt"
     
     kf_param_path = "kf_params_naive.cpkl"
