@@ -68,7 +68,7 @@ class MC_Crop_Tracker():
         self.f_init =  params['f_init'] if 'f_init' in params else 5                            # number of frames before objects are considered permanent 
         self.f_max = params['f_max'] if 'f_max' in params else 5             
         self.cs = params['cs'] if 'cs' in params else 112                                       # size of square crops for crop detector           
-        self.d = params['d'] if 'd' in params else 1                                            # dense detection frequency (1 is every frame, -1 is never, 2 is every 2 frames, etc)
+        self.d = params['d'] if 'd' in params else 3                                            # dense detection frequency (1 is every frame, -1 is never, 2 is every 2 frames, etc)
         self.s = params['s'] if 's' in params else 1                                            # measurement frequency (if 1, every frame, if 2, measure every 2 frames, etc)
         self.q = params["q"] if "q" in params else 1                                            # target number of measurement queries per object per frame (assuming more than one camera is available)
         self.max_size = params['max_size'] if 'max_size' in params else torch.tensor([85,15,15])# max object size (L,W,H) in feet
@@ -194,7 +194,7 @@ class MC_Crop_Tracker():
                         self.timestamps[i] = self.ts[self.sequences[i]][fr_num - 1] + 1/30.0
                     # if fr_num == -1 or fr_num > self.frame_num:
                     #     self.frame_num = fr_num
-                    print("Skipped a frame for camera {} to synchronize.".format(self.cameras[i]))
+                    #print("Skipped a frame for camera {} to synchronize.".format(self.cameras[i]))
         except TypeError:
             pass # None for timestamp value
         
@@ -267,7 +267,6 @@ class MC_Crop_Tracker():
         for unmatched detections, and increments counters / removes tracklets not matched
         to any detection
         """
-        start = time.time()
 
         # 1. Update tracked and matched objects
         update_array = np.zeros([len(matchings),5])
@@ -295,11 +294,10 @@ class MC_Crop_Tracker():
                 self.all_classes[update_ids[i]][int(update_classes[i])] += 1
                 self.all_confs[update_ids[i]].append(update_confs[i])
                 
-            self.time_metrics['update'] += time.time() - start
               
         
         # 2. For each detection not in matchings, add a new object
-        start = time.time()
+
         
         new_array = np.zeros([len(detections) - len(matchings),5])
         new_directions = np.zeros([len(detections) - len(matchings)])
@@ -336,7 +334,8 @@ class MC_Crop_Tracker():
                 self.filter.add(new_array,new_ids,new_directions,new_times,init_speed = True,classes = new_classes)
             else:
                 self.filter.add(new_array,new_ids,new_directions,new_times,init_speed = True)
-        
+      
+    
     def increment_fslds(self,undetected,pre_ids):
         start = time.time()
         
@@ -356,7 +355,7 @@ class MC_Crop_Tracker():
         self.time_metrics['add and remove'] += time.time() - start
         
     
-    
+    # TODO - I THINK THIS FUNCTION IS WAY TOO SLOW, CONVERT TO TENSOR OPS
     def remove_overlaps(self):
         """
         Checks IoU between each set of tracklet objects and removes the newer tracklet
@@ -626,13 +625,13 @@ class MC_Crop_Tracker():
             The default is None.
         """
         for im_idx,im in enumerate(self.original_ims):
-            tn = 2
+            tn = 3
             im = im.copy()/255.0
         
             cam_id = self.cameras[im_idx]
                      
             # plot detection bboxes
-            if len(detections) > 0:
+            if len(detections) > 0 and not single_box:
                 
                 cam_detections = []
                 for idx in range(len(detections)):
@@ -670,14 +669,15 @@ class MC_Crop_Tracker():
             
             
             # plot time unadjusted boxes
-            post_locations = self.filter.objs(with_direction = True)
-            boxes = []
-            for id in post_locations:
-                boxes.append(post_locations[id][0:6])
-            if len(boxes) > 0:
-                boxes = torch.from_numpy(np.stack(boxes))
-                boxes = self.hg.state_to_im(boxes,name = cam_id)
-                im = self.hg.plot_boxes(im,boxes,color = (0.2,0.2,0.2),thickness = 1)
+            if not single_box:
+                post_locations = self.filter.objs(with_direction = True)
+                boxes = []
+                for id in post_locations:
+                    boxes.append(post_locations[id][0:6])
+                if len(boxes) > 0:
+                    boxes = torch.from_numpy(np.stack(boxes))
+                    boxes = self.hg.state_to_im(boxes,name = cam_id)
+                    im = self.hg.plot_boxes(im,boxes,color = (0.2,0.2,0.2),thickness = 1)
             
             
             
@@ -730,7 +730,7 @@ class MC_Crop_Tracker():
             self.original_ims[im_idx] = im
         
         n_ims = len(self.original_ims)
-        n_row = int(np.floor(np.sqrt(n_ims)))
+        n_row = int(np.round(np.sqrt(n_ims)))
         n_col = int(np.ceil(n_ims/n_row))
         
         cat_im = np.zeros([1080*n_row,1920*n_col,3])
@@ -795,13 +795,16 @@ class MC_Crop_Tracker():
                     cv2.waitKey(0)
                     cv2.destroyAllWindows()
                 
+                
+               
+                    
+                # roll filter forward to this timestep
                 # For each camera, view objects at timestamp, match, and update
                 all_matches = []
                 order = np.array(self.timestamps).argsort()
                 self.updated_this_frame = []
-               
+                
                     
-                # roll filter forward to this timestep
                 start = time.time()
         
                 try: # in the case that there are no active objects will throw exception
@@ -828,7 +831,7 @@ class MC_Crop_Tracker():
                 # for each match, we roll the relevant object time forward to the time of the detection
                 # select the time for each relevant detection
                     
-                
+                start = time.time()
                 if len(matchings) > 0: # we only need to predict object locations for objects with updates
                     filter_idxs = [match[0] for match in matchings]
                     match_times = [self.timestamps[camera_idxs[match[1]]] for match in matchings]
@@ -853,11 +856,32 @@ class MC_Crop_Tracker():
                         undetected.append(id)
                 self.increment_fslds(pre_ids,undetected)
 
-                # remove overlapping objects and anomalies
-                self.remove_overlaps()
-                #self.remove_anomalies(x_bounds = self.x_range)
+                self.time_metrics['update'] += time.time() - start
 
-                
+
+
+
+
+
+            elif self.frame_num % self.s == 0:
+                detections = []
+                pre_loc = []
+                pass
+            
+            
+                # get expected camera location for each existing object based on last known time
+            
+            
+            
+
+            # remove overlapping objects and anomalies
+            start = time.time()
+            self.remove_overlaps()
+            self.remove_anomalies(x_bounds = self.x_range)
+            self.time_metrics['add and remove'] += time.time() - start
+
+            
+            
             # get all object locations at set clock time and store in output dict
             start = time.time()
             try:
@@ -882,7 +906,7 @@ class MC_Crop_Tracker():
             # load next frame  
             start = time.time()
             next(self)
-            #self.time_sync_cameras()
+            self.time_sync_cameras()
             torch.cuda.synchronize()
             self.time_metrics["load"] = time.time() - start
             torch.cuda.empty_cache()
@@ -921,10 +945,10 @@ class MC_Crop_Tracker():
 if __name__ == "__main__":
     
     # inputs
-    sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",
-                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4"]
-                 # "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",
-                 # "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c5_0_4k.mp4"]
+    sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c2_0_4k.mp4",
+                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4",
+                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",]
+                 #"/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c5_0_4k.mp4"
     det_cp = "/home/worklab/Documents/derek/3D-playground/cpu_15000gt_3D.pt"
     
     kf_param_path = "kf_params_naive.cpkl"
@@ -1063,7 +1087,7 @@ if __name__ == "__main__":
     
     #%% Run tracker
     pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/temp_3D_track_outputs.csv"
-    cutoff_frame = 1000
+    cutoff_frame = 500
     OUT = "track_ims"
     
     tracker = MC_Crop_Tracker(sequences,detector,kf_params,hg,class_dict, params = params, OUT = OUT,PLOT = True,early_cutoff = cutoff_frame)
