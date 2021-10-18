@@ -185,7 +185,7 @@ class MC_Crop_Tracker():
         try:
             latest = max(self.timestamps)
             for i in range(len(self.timestamps)):
-                while latest - self.timestamps[i]  >= 0.03:
+                while latest - self.timestamps[i]  >= 0.02:
                     fr_num,fr,orig_im,timestamp = next(self.loaders[i])
                     self.frames[i] = fr
                     self.original_ims[i] = orig_im
@@ -227,7 +227,7 @@ class MC_Crop_Tracker():
         camera_idxs = camera_idxs[keepers]
         
         if len(detections) == 0:
-            return [],[],[]
+            return [],[],[], []
         # Homography object expects boxes in the form [d,8,2] - reshape detections
         detections = detections.reshape(-1,10,2)
         detections = detections[:,:8,:] # drop 2D boxes
@@ -830,12 +830,20 @@ class MC_Crop_Tracker():
                     
                 
                 if len(matchings) > 0: # we only need to predict object locations for objects with updates
+                    filter_idxs = [match[0] for match in matchings]
                     match_times = [self.timestamps[camera_idxs[match[1]]] for match in matchings]
-                    dts = self.filter.get_dt(match_times)
+                    dts = self.filter.get_dt(match_times,idxs = filter_idxs)
                     self.filter.predict(dt = dts)
                     
                 detection_times = [self.timestamps[cam_idx] for cam_idx in camera_idxs]
                 self.manage_tracks(detections,matchings,pre_ids,labels,scores,detection_times)
+
+                # print status for one object
+                if False:
+                    objs = self.filter.objs()
+                    key = list(objs.keys())[0]
+                    box = objs[key]
+                    print("At filter time {} and frame times {}, obj {} is at X position {}ft with speed {}fps".format(self.filter.T[0],self.timestamps,key,box[0],box[-1]))
 
                 # for objects not detected in any camera view
                 updated = list(set(self.updated_this_frame))
@@ -868,14 +876,13 @@ class MC_Crop_Tracker():
             # Plot
             start = time.time()
             if self.PLOT:
-                print(self.timestamps)
                 self.plot(detections,camera_idxs,post_locations,self.all_classes,pre_locations = pre_loc,label_len = 5)
             self.time_metrics['plot'] += time.time() - start
        
             # load next frame  
             start = time.time()
             next(self)
-            self.time_sync_cameras()
+            #self.time_sync_cameras()
             torch.cuda.synchronize()
             self.time_metrics["load"] = time.time() - start
             torch.cuda.empty_cache()
@@ -914,10 +921,10 @@ class MC_Crop_Tracker():
 if __name__ == "__main__":
     
     # inputs
-    sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c2_0_4k.mp4",
-                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4",
-                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",
-                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c5_0_4k.mp4"]
+    sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",
+                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4"]
+                 # "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",
+                 # "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c5_0_4k.mp4"]
     det_cp = "/home/worklab/Documents/derek/3D-playground/cpu_15000gt_3D.pt"
     
     kf_param_path = "kf_params_naive.cpkl"

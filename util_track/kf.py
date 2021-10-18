@@ -117,16 +117,44 @@ class Torch_KF(object):
     
    
     
-    def get_dt(self, time):
+    def get_dt(self, target_time, idxs = None, use_default = True):
         """
-        Given a time, computes dt for each object in the filter
+        Given a time, computes dt for each object in the filter. There are 4 acceptable input formats:
+            1. time (float) - dt predicted for the same time for all objects
+            2. time (list) - dt predicted for each time in list (list dimension must match self.X dimension)
+            3. time (tensor) - same as 2
+            4. time (list) and idxs (list) of same length - idxs index self.X, all other 
+                objects are returned dt if use_default, otherwise returned 0
+        
         """
         
-        try:
-            dt = time - self.T
-            return dt
-        except TypeError:
+        if self.X is None or len(self.X) == 0:
             return None
+        
+        if type(target_time) == float: # 1.
+            dt = target_time - self.T
+            return dt
+        
+        elif type(target_time) == list: # 2 and 4.
+            target_time = torch.tensor(target_time,dtype = torch.double) 
+            
+            if idxs is None:
+                dt = target_time - self.T
+                return dt
+            else:
+                dt = torch.zeros(len(self.X))
+                dt = dt + self.dt_default if use_default else dt
+                
+                for i in range(len(idxs)):
+                    dt[idxs[i]] = target_time[i] - self.T[idxs[i]]
+                
+                return dt
+                    
+        else: # 3. time is tensor
+            dt = target_time - self.T
+            return dt
+        
+
         
     def add(self,detections,obj_ids,directions,times,init_speed = False,classes = None):
         """
@@ -190,7 +218,7 @@ class Torch_KF(object):
             self.X = newX.to(self.device).float()
             self.P = newP.to(self.device)
             self.D = newD.to(self.device)
-            self.T = newT.to(self.device)
+            self.T = newT.to(self.device).double()
             
             
         # add obj_ids to dictionary
@@ -290,7 +318,7 @@ class Torch_KF(object):
             step4 = step4 * dt.unsqueeze(1).unsqueeze(2).repeat(1,self.Q.shape[1],self.Q.shape[2]) / self.dt_default
             
         self.P = step3 + step4
-        
+        self.P = self.P.float()
         
         self.T += dt  # either dt is a single value, or dt is a vector of the same length as self.T
         
