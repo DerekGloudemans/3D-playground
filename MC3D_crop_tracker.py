@@ -70,21 +70,22 @@ class MC_Crop_Tracker():
         self.phi_match =   params['phi_match'] if 'phi_match' in params else 0.1                # required IOU for detection -> tracklet match
         self.phi_over =  params['phi_over'] if 'phi_over' in params else 0.1                    # after update overlapping objects are pruned 
         
-        self.W = params['W'] if 'W' in params else 1                                         # weights (1-W)*IOU + W*conf for bounding box selection from cropper 
+        self.W = params['W'] if 'W' in params else 0.5          
+        self.cd_max = params["cd_max"] if "cd_max" in params else 50                          # weights (1-W)*IOU + W*conf for bounding box selection from cropper 
         self.f_max = params['f_max'] if 'f_max' in params else 5             
         self.cs = params['cs'] if 'cs' in params else 112                                       # size of square crops for crop detector       
         self.b = params["b"] if "b" in params else 1.25                                         # box expansion ratio for square crops (size = max object x/y size * b)
-        self.d = params['d'] if 'd' in params else 2                                            # dense detection frequency (1 is every frame, -1 is never, 2 is every 2 frames, etc)
-        self.s = params['s'] if 's' in params else 1                                            # measurement frequency (if 1, every frame, if 2, measure every 2 frames, etc)
+        self.d = params['d'] if 'd' in params else 10                                            # dense detection frequency (1 is every frame, -1 is never, 2 is every 2 frames, etc)
+        self.s = params['s'] if 's' in params else 2                                           # measurement frequency (if 1, every frame, if 2, measure every 2 frames, etc)
         self.q = params["q"] if "q" in params else 1                                            # target number of measurement queries per object per frame (assuming more than one camera is available)
         self.max_size = params['max_size'] if 'max_size' in params else torch.tensor([85,15,15])# max object size (L,W,H) in feet
         
         self.x_range = params["x_range"] if 'x_range' in params else [0,2000]                   # track objects until they exit this range of state space
         camera_centers = params["cam_centers"] if "cam_centers" in params else {
                                                              'p1c1': [260.0,60],
-                                                             'p1c2': [570.0,60],
-                                                             'p1c3': [700.0,24],
-                                                             'p1c4': [702.0,84],
+                                                             'p1c2': [590.0,60],
+                                                             'p1c3': [720.0,60],
+                                                             'p1c4': [710.0,30],
                                                              'p1c5': [810.0,60],
                                                              'p1c6': [980.0,60],
                                                              'p2c1': [650.0,60],
@@ -638,7 +639,7 @@ class MC_Crop_Tracker():
                 out_matchings.append([i,matchings[i]])#,dist[i,matchings[i]]])
         return np.array(out_matchings)
     
-    def plot(self,detections,camera_idxs,post_locations,all_classes,frame = None,pre_locations = None,label_len = 1,single_box = False,crops = None):
+    def plot(self,detections,camera_idxs,post_locations,all_classes,frame = None,pre_locations = None,label_len = 1,single_box = True,crops = None,fancy_crop = True):
         """
         Description
         -----------
@@ -668,21 +669,24 @@ class MC_Crop_Tracker():
             im = im.copy()/255.0
         
             cam_id = self.cameras[im_idx]
-                     
+               
+            # plot priors
+            if pre_locations is not None and len(pre_locations) > 0 and not single_box:
+                pre_boxes = self.hg.state_to_im(pre_locations,name = cam_id)
+                im = self.hg.plot_boxes(im,pre_boxes,color = (0,255,255))
+            
             # plot detection bboxes
-            if len(detections) > 0 and not single_box:
-                
+            if len(detections) > 0:
                 cam_detections = []
                 for idx in range(len(detections)):
                     if camera_idxs[idx] == im_idx:
                         cam_detections.append(detections[idx])
-                        
-                        
                 if len(cam_detections) > 0:
                     cam_detections = torch.stack(cam_detections)
                     im = self.hg.plot_boxes(im, self.hg.state_to_im(cam_detections,name = cam_id),thickness = 1, color = (0,0,255))
             
-            if crops is not None:
+            # plot crops
+            if crops is not None and not fancy_crop:
                 crops = crops.int()
                 for idx in range(len(camera_idxs)):
                     if camera_idxs[idx] == im_idx:
@@ -690,6 +694,7 @@ class MC_Crop_Tracker():
                         c2 = (crops[idx,2],crops[idx,3])
                         im = cv2.rectangle(im,c1,c2,(255,255,255),1)
             
+            #plot estimated locations
             dts = self.filter.get_dt(self.timestamps[im_idx])
             post_locations = self.filter.view(with_direction = True,dt = dts)
             
@@ -699,23 +704,17 @@ class MC_Crop_Tracker():
             speeds = []
             directions = []
             dims = []
-            #plot estimated locations
             for id in post_locations:
                 ids.append(id)
                 boxes.append(post_locations[id][0:6])
                 speeds.append(((np.abs(post_locations[id][6]) * 3600/5280 * 10).round())/10) # in mph
                 classes.append(np.argmax(self.all_classes[id]))            
                 directions.append("WB" if post_locations[id][5] == -1 else "EB")
-                dims.append((post_locations[id][2:5]*10).round(0)/10)
-                
+                dims.append((post_locations[id][2:5]*10).round(0)/10) 
             if len(boxes) > 0:
                 boxes = torch.from_numpy(np.stack(boxes))
                 boxes = self.hg.state_to_im(boxes,name = cam_id)
                 im = self.hg.plot_boxes(im,boxes,color = (0.6,0.8,0),thickness = tn)
-            
-            im2 = im.copy()
-            
-            
             
             # plot time unadjusted boxes
             if not single_box:
@@ -728,10 +727,21 @@ class MC_Crop_Tracker():
                     boxes = self.hg.state_to_im(boxes,name = cam_id)
                     im = self.hg.plot_boxes(im,boxes,color = (0.2,0.2,0.2),thickness = 1)
             
+            if crops is not None and fancy_crop:
+                # make a weighted im with 0.5 x intensity outside of crops
+                crops = crops.int()
+                im2 = np.zeros(im.shape)
+                
+                for idx,crop in enumerate(crops):
+                    if camera_idxs[idx] == im_idx:
+                        
+                        im2[crop[1]:crop[3],crop[0]:crop[2],:] = im[crop[1]:crop[3],crop[0]:crop[2],:]
+                im =  cv2.addWeighted(im,0.7,im2,0.3,0)
+                
             
-            
+            # plot label
+            im2 = im.copy()
             for i in range(len(boxes)):
-                # plot label
                 
                 label = "{} {}:".format(self.class_dict[classes[i]],ids[i],)          
                 label2 = "{:.1f}mph {}".format(speeds[i],directions[i])   
@@ -763,15 +773,9 @@ class MC_Crop_Tracker():
                     cv2.putText(im2, label, c1, cv2.FONT_HERSHEY_PLAIN,text_size, [0,0,0], 1)
             
             im = cv2.addWeighted(im,0.7,im2,0.3,0)
-            if pre_locations is not None and len(pre_locations) > 0 and not single_box:
-                
-                # pre_boxes = []
-                # for id in pre_locations:
-                #     pre_boxes.append(pre_locations[id][0:6])
-                # pre_boxes = torch.from_numpy(np.stack(pre_boxes))
-                pre_boxes = self.hg.state_to_im(pre_locations,name = cam_id)
-                im = self.hg.plot_boxes(im,pre_boxes,color = (0,255,255))
-        
+            
+            
+            
         
             if len(self.writers) > 0:
                 self.writers[im_idx](im)
@@ -792,7 +796,7 @@ class MC_Crop_Tracker():
         # resize to fit on standard monitor
         
         cv2.imshow("frame",cat_im)
-        cv2.setWindowTitle("frame",str(frame))
+        cv2.setWindowTitle("frame",str(self.frame_num))
         key = cv2.waitKey(1)
         if key == ord("p"):
             cv2.waitKey(0)
@@ -1074,6 +1078,7 @@ class MC_Crop_Tracker():
                 cam_names = [self.cameras[i] for i in cam_idxs]
                 self.time_metrics["crop and align"] += time.time() -start
                 
+                start = time.time()
                 # predict time-correct a prioris in each camera
                 obj_times = [self.timestamps[idx] for idx in cam_idxs]
                 
@@ -1124,7 +1129,13 @@ class MC_Crop_Tracker():
                 reg_boxes = self.local_to_global(reg_boxes,crop_boxes)
             
             
-            #     # TODO -  probably need to add a step here to keep only top 100 or so boxes
+                # reg_boxes is [n,d,16] and confs is [n,d] - we reduce to [n,cd_max,16] and n[cd_max] where cd_max << d
+                top_idxs = torch.topk(confs,self.cd_max,dim = 1)[1]
+                row_idxs = torch.arange(reg_boxes.shape[0]).unsqueeze(1).repeat(1,top_idxs.shape[1])
+                
+                reg_boxes = reg_boxes[row_idxs,top_idxs,:,:]
+                confs =  confs[row_idxs,top_idxs]
+                classes = classes[row_idxs,top_idxs] 
 
                 # convert each box using the appropriate H into state
                 n_objs = reg_boxes.shape[0]
@@ -1133,9 +1144,10 @@ class MC_Crop_Tracker():
                 heights = self.hg.guess_heights(classes.reshape(-1))
                 reg_boxes_state = self.hg.im_to_state(reg_boxes,heights = heights,name = cam_names_repeated)
                 
-                repro_boxes = self.hg.state_to_im(reg_boxes_state, name = cam_names_repeated)
-                refined_heights = self.hg.height_from_template(repro_boxes,heights,reg_boxes)
-                reg_boxes_state = self.hg.im_to_state(reg_boxes,heights = refined_heights,name = cam_names_repeated)
+                if True:
+                    repro_boxes = self.hg.state_to_im(reg_boxes_state, name = cam_names_repeated)
+                    refined_heights = self.hg.height_from_template(repro_boxes,heights,reg_boxes)
+                    reg_boxes_state = self.hg.im_to_state(reg_boxes,heights = refined_heights,name = cam_names_repeated)
 
                 # for each object, select the best box
                 detections, classes, confs = self.select_best_box(pre_loc,reg_boxes_state,confs,classes,n_objs)
@@ -1198,9 +1210,9 @@ class MC_Crop_Tracker():
             next(self)
             self.time_sync_cameras()
             torch.cuda.synchronize()
-            self.time_metrics["load"] = time.time() - start
             torch.cuda.empty_cache()
-            
+            self.time_metrics["load"] = time.time() - start
+
             # increment clock time at fixed rate,regardless of actual frame timestamps
             self.clock_time += 1/30.0
             
@@ -1209,6 +1221,8 @@ class MC_Crop_Tracker():
             print("\rTracking frame {} of {} at {:.1f} FPS ({:.1f} FPS without loading and plotting)".format(self.frame_num,self.n_frames,fps,fps_noload), end = '\r', flush = True)
             
             if self.frame_num > self.cutoff_frame:
+                for item in self.time_metrics.items():
+                    print(item)
                 break
             
         # clean up at the end
@@ -1235,9 +1249,9 @@ class MC_Crop_Tracker():
 if __name__ == "__main__":
     
     # inputs
-    sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c2_0_4k.mp4",]
-                 # "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4",
-                 # "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",]
+    sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c2_0_4k.mp4",
+                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4",
+                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",]
                  #"/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c5_0_4k.mp4"
     
     # sequences = ["/home/worklab/Data/cv/video/08_06_2021/p1c2_0_4k.mp4",
@@ -1387,7 +1401,7 @@ if __name__ == "__main__":
     
     #%% Run tracker
     pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/temp_3D_track_outputs.csv"
-    cutoff_frame = 500
+    cutoff_frame = 1000
     OUT = "track_ims"
     
     tracker = MC_Crop_Tracker(sequences,detector,kf_params,hg,class_dict, params = params, OUT = OUT,PLOT = True,early_cutoff = cutoff_frame,cd = crop_detector)
