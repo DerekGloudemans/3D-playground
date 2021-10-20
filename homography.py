@@ -688,7 +688,7 @@ def load_i24_csv(file):
 # basic test code
 if __name__ == "__main__":
     
-    camera_name = "p2c3"
+    camera_name = "p1c5"
     
     vp_path = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp/{}_axes.csv".format(camera_name)
     point_path = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform/{}_im_lmcs_transform_points.csv".format(camera_name)

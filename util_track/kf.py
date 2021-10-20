@@ -363,9 +363,9 @@ class Torch_KF(object):
         
         # state innovation --> y = z - XHt --> mx4 = mx4 - [mx7] x [4x7]t  
         try:
-            z = torch.from_numpy(detections).to(self.device)
+            z = torch.from_numpy(detections).to(self.device).double()
         except:
-             z = detections.to(self.device)
+             z = detections.to(self.device).double()
         y = z + mu_R - torch.mm(X_up, H.transpose(0,1))  ######### Not sure if this is right but..
         
         # covariance innovation --> HPHt + R --> [mx4x4] = [mx4x7] bx [mx7x7] bx [mx4x7]t + [mx4x4]

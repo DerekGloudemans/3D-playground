@@ -41,6 +41,7 @@ class MC_Crop_Tracker():
                  homography,
                  class_dict,
                  params = {},
+                 cd = None,
                  PLOT = True,
                  OUT = None,
                  early_cutoff = 1000):
@@ -51,6 +52,7 @@ class MC_Crop_Tracker():
         homgography     - (Homography object) with correspondences for each sequence camera
         class_dict      - (dict) with int->string and string-> int class conv.
         params          - (dict) optional parameters for tracker
+        cd              - pytorch object detector or None
         PLOT            - if true, will plot tracking outputs
         OUT             - (str or None) path to write output frames to
         early_cutoff    - (int) terminate tracking at this frame 
@@ -58,45 +60,46 @@ class MC_Crop_Tracker():
         
         # parse params
         self.sigma_d = params['sigma_d'] if 'sigma_d' in params else 0.4                        # minimum detection confidence
+        self.sigma_c = params['sigma_c'] if 'sigma_c' in params else 0.4                        # minimum crop detection confidence
+
         self.sigma_min =  params['sigma_min'] if 'sigma_min' in params else 0.7                 # we require an object to have at least 3 confidences > sigma_min within f_init frames to persist
+        self.f_init =  params['f_init'] if 'f_init' in params else 5                            # number of frames before objects are considered permanent 
+                
         self.phi_nms_space = params['phi_nms_space'] if 'phi_nms_space' in params else 0.2      # overlapping objects are pruned by NMS during detection parsing
         self.phi_nms_im =  params['phi_nms_im'] if 'phi_nms_im' in params else 0.3              # overlapping objects are possibly pruned by NMS during detection parsing
         self.phi_match =   params['phi_match'] if 'phi_match' in params else 0.1                # required IOU for detection -> tracklet match
         self.phi_over =  params['phi_over'] if 'phi_over' in params else 0.1                    # after update overlapping objects are pruned 
         
-        self.W = params['W'] if 'W' in params else 0.4                                          # weights (1-W)*IOU + W*conf for bounding box selection from cropper 
-        self.f_init =  params['f_init'] if 'f_init' in params else 5                            # number of frames before objects are considered permanent 
+        self.W = params['W'] if 'W' in params else 1                                         # weights (1-W)*IOU + W*conf for bounding box selection from cropper 
         self.f_max = params['f_max'] if 'f_max' in params else 5             
         self.cs = params['cs'] if 'cs' in params else 112                                       # size of square crops for crop detector       
         self.b = params["b"] if "b" in params else 1.25                                         # box expansion ratio for square crops (size = max object x/y size * b)
-        self.d = params['d'] if 'd' in params else 1                                            # dense detection frequency (1 is every frame, -1 is never, 2 is every 2 frames, etc)
+        self.d = params['d'] if 'd' in params else 2                                            # dense detection frequency (1 is every frame, -1 is never, 2 is every 2 frames, etc)
         self.s = params['s'] if 's' in params else 1                                            # measurement frequency (if 1, every frame, if 2, measure every 2 frames, etc)
         self.q = params["q"] if "q" in params else 1                                            # target number of measurement queries per object per frame (assuming more than one camera is available)
         self.max_size = params['max_size'] if 'max_size' in params else torch.tensor([85,15,15])# max object size (L,W,H) in feet
         
         self.x_range = params["x_range"] if 'x_range' in params else [0,2000]                   # track objects until they exit this range of state space
         camera_centers = params["cam_centers"] if "cam_centers" in params else {
-                                                             'p1c1': 260.0,
-                                                             'p1c2': 570.0,
-                                                             'p1c3': 700.0,
-                                                             'p1c4': 700.0,
-                                                             'p1c5': 810.0,
-                                                             'p1c6': 980.0,
-                                                             'p2c1': 650.0,
-                                                             'p2c2': 760.0,
-                                                             'p2c3': 870.0,
-                                                             'p2c4': 870.0,
-                                                             'p2c5': 920.0,
-                                                             'p2c6': 980.0,
-                                                             'p3c1': 1100.0,
-                                                             'p3c2': 1300.0,
-                                                             'p3c3': 1410.0,
-                                                             'p3c4': 1410.0,
-                                                             'p3c5': 1575.0,
-                                                             'p3c6': 1790.0}
-        # store camera center of view info
-        # self.cc_x = torch.stack([camera_centers[key] for key in camera_centers.keys()])
-        # self.cc_ids = [key for key in camera_centers.keys()]
+                                                             'p1c1': [260.0,60],
+                                                             'p1c2': [570.0,60],
+                                                             'p1c3': [700.0,24],
+                                                             'p1c4': [702.0,84],
+                                                             'p1c5': [810.0,60],
+                                                             'p1c6': [980.0,60],
+                                                             'p2c1': [650.0,60],
+                                                             'p2c2': [760.0,60],
+                                                             'p2c3': [870.0,60],
+                                                             'p2c4': [870.0,60],
+                                                             'p2c5': [920.0,60],
+                                                             'p2c6': [980.0,60],
+                                                             'p3c1': [1100.0,60],
+                                                             'p3c2': [1300.0,60],
+                                                             'p3c3': [1410.0,60],
+                                                             'p3c4': [1410.0,60],
+                                                             'p3c5': [1575.0,60],
+                                                             'p3c6': [1790.0,60]}
+       
         
         
         
@@ -116,26 +119,31 @@ class MC_Crop_Tracker():
         self.class_dict = class_dict
  
         self.detector = detector.to(self.device)
-        detector.eval()
+        self.detector.eval()
+        
+        if cd is not None:
+            self.crop_detector = cd.to(self.device)
+            self.crop_detector.eval()
         
         
         # for each sequence,open start a FrameLoader process
         self.cameras = []
         self.sequences = []
         self.loaders = []
-        self.cc_to_camera_index = []
         for sequence in sequences:
             # get camera name
             name = re.search("p\dc\d",sequence).group(0)
             self.cameras.append(name)
-            #self.cc_to_camera_index.append(self.cc_ids.index(name))
-            self.sequences.append(name +"_4k")
+            self.sequences.append(name +"_0_4k")
             l = FrameLoader(sequence,self.device,self.d,self.s,downsample = 1)
             self.loaders.append(l)
         
         self.n_frames = len(self.loaders[0])
         time.sleep(1)
-
+        
+ 
+        # store camera center of view info
+        self.centers = torch.tensor([camera_centers[key] for key in self.cameras])
 
         # a single output csv will be written
         # optionally, frames can be written (to one folder per sequence)
@@ -630,7 +638,7 @@ class MC_Crop_Tracker():
                 out_matchings.append([i,matchings[i]])#,dist[i,matchings[i]]])
         return np.array(out_matchings)
     
-    def plot(self,detections,camera_idxs,post_locations,all_classes,frame = None,pre_locations = None,label_len = 1,single_box = True, ):
+    def plot(self,detections,camera_idxs,post_locations,all_classes,frame = None,pre_locations = None,label_len = 1,single_box = False,crops = None):
         """
         Description
         -----------
@@ -668,9 +676,19 @@ class MC_Crop_Tracker():
                 for idx in range(len(detections)):
                     if camera_idxs[idx] == im_idx:
                         cam_detections.append(detections[idx])
+                        
+                        
                 if len(cam_detections) > 0:
                     cam_detections = torch.stack(cam_detections)
                     im = self.hg.plot_boxes(im, self.hg.state_to_im(cam_detections,name = cam_id),thickness = 1, color = (0,0,255))
+            
+            if crops is not None:
+                crops = crops.int()
+                for idx in range(len(camera_idxs)):
+                    if camera_idxs[idx] == im_idx:
+                        c1 = (crops[idx,0],crops[idx,1])
+                        c2 = (crops[idx,2],crops[idx,3])
+                        im = cv2.rectangle(im,c1,c2,(255,255,255),1)
             
             dts = self.filter.get_dt(self.timestamps[im_idx])
             post_locations = self.filter.view(with_direction = True,dt = dts)
@@ -798,7 +816,7 @@ class MC_Crop_Tracker():
         
         w = maxx - minx
         h = maxy - miny
-        scale = torch.max(torch.stack([w,h]),dim = 1)[0] * self.b
+        scale = torch.max(torch.stack([w,h]),dim = 0)[0] * self.b
         
         # find a tight box around each object in xysr formulation
         minx2 = (minx+maxx)/2.0 - scale/2.0
@@ -806,7 +824,7 @@ class MC_Crop_Tracker():
         miny2 = (miny+maxy)/2.0 - scale/2.0
         maxy2 = (miny+maxy)/2.0 + scale/2.0
         
-        crop_boxes = torch.stack([minx2,miny2,maxx2,maxy2]).to(self.device)
+        crop_boxes = torch.stack([minx2,miny2,maxx2,maxy2]).transpose(0,1).to(self.device)
         return crop_boxes
         
             
@@ -821,25 +839,97 @@ class MC_Crop_Tracker():
         preds = preds.reshape(n,d,10,2)
         preds = preds[:,:,:8,:] # drop 2D boxes
         
-        scales = torch.max(torch.stack(crop_boxes[:,2] - crop_boxes[:,0],crop_boxes[:,3] - crop_boxes[:,1]),dim = 1)[0]
+        scales = torch.max(torch.stack([crop_boxes[:,2] - crop_boxes[:,0],crop_boxes[:,3] - crop_boxes[:,1]]),dim = 0)[0]
         
         # preds is [n,d,8,2] - expand scale, currently [n], to match
         scales = scales.unsqueeze(1).unsqueeze(1).unsqueeze(1).repeat(1,d,8,2)
         
-                # scale each box by the box scale / crop size self.cs
-
+        # scale each box by the box scale / crop size self.cs
         preds = preds * scales / self.cs
     
-        # shift based on 
-        preds[:,:,:,0] += crop_boxes[:,0].unsqueeze(1).unsqueeze(1).unsqueeze(1).repeat(1,d,8,1)
-        preds[:,:,:,1] += crop_boxes[:,1].unsqueeze(1).unsqueeze(1).unsqueeze(1).repeat(1,d,8,1)
+        # shift based on crop box corner
+        preds[:,:,:,0] += crop_boxes[:,0].unsqueeze(1).unsqueeze(1).repeat(1,d,8)
+        preds[:,:,:,1] += crop_boxes[:,1].unsqueeze(1).unsqueeze(1).repeat(1,d,8)
         
         return preds
 
     
-    def select_best_box(self):
-        raise NotImplementedError
+    def select_best_box(self,a_priori,preds,confs,classes,n_objs):
+        """
+        a_priori - [n,6] array of state formulation object priors
+        preds    - [n,d,6] array where n indexes object and d indexes detections for that object, in state formulation
+        confs   - [n,d] array of confidence for each pred
+        confs   - [n,d] array of class prediction for each pred
+        returns  - [n,6] array of best matched objects
+        """
+
+        
+        # convert  preds into space 
+        preds_space = self.hg.state_to_space(preds.clone())
+        preds_space = preds_space.reshape(n_objs,-1,8,3)
+        preds = preds.reshape(n_objs,-1,6)
+        
+        n = preds_space.shape[0] 
+        d = preds_space.shape[1]
+        
+        # convert into xmin ymin xmax ymax form        
+        boxes_new = torch.zeros([n,d,4])
+        boxes_new[:,:,0] = torch.min(preds_space[:,:,0:4,0],dim = 2)[0]
+        boxes_new[:,:,2] = torch.max(preds_space[:,:,0:4,0],dim = 2)[0]
+        boxes_new[:,:,1] = torch.min(preds_space[:,:,0:4,1],dim = 2)[0]
+        boxes_new[:,:,3] = torch.max(preds_space[:,:,0:4,1],dim = 2)[0]
+        preds_space = boxes_new
+        
+        # convert a_priori into space
+        a_priori = self.hg.state_to_space(a_priori.clone())
+        boxes_new = torch.zeros([n,4])
+        boxes_new[:,0] = torch.min(a_priori[:,0:4,0],dim = 1)[0]
+        boxes_new[:,2] = torch.max(a_priori[:,0:4,0],dim = 1)[0]
+        boxes_new[:,1] = torch.min(a_priori[:,0:4,1],dim = 1)[0]
+        boxes_new[:,3] = torch.max(a_priori[:,0:4,1],dim = 1)[0]
+        a_priori = boxes_new
+        
+        # a_priori is now [n,4] need to repeat by [d]
+        a_priori = a_priori.unsqueeze(1).repeat(1,d,1)
+        
+        # calculate iou for each
+        ious = self.md_iou(preds_space.double(),a_priori.double())
+        
+        # compute score for each box [n,d]
+        scores = (1-self.W) * ious + self.W*confs
+        
+        keep = torch.argmax(scores,dim = 1)
+        
+        idx = torch.arange(n)
+        best_boxes = preds[idx,keep,:]
+        cls_preds = classes[idx,keep]
+        confs = confs[idx,keep]
+        
+        
+        # gather max score boxes
+        
+        return best_boxes, cls_preds, confs
     
+    def md_iou(self,a,b):
+        """
+        a,b - [batch_size ,num_anchors, 4]
+        """
+        
+        area_a = (a[:,:,2]-a[:,:,0]) * (a[:,:,3]-a[:,:,1])
+        area_b = (b[:,:,2]-b[:,:,0]) * (b[:,:,3]-b[:,:,1])
+        
+        minx = torch.max(a[:,:,0], b[:,:,0])
+        maxx = torch.min(a[:,:,2], b[:,:,2])
+        miny = torch.max(a[:,:,1], b[:,:,1])
+        maxy = torch.min(a[:,:,3], b[:,:,3])
+        zeros = torch.zeros(minx.shape,dtype=float)
+        
+        intersection = torch.max(zeros, maxx-minx) * torch.max(zeros,maxy-miny)
+        union = area_a + area_b - intersection
+        iou = torch.div(intersection,union)
+        
+        #print("MD iou: {}".format(iou.max(dim = 1)[0].mean()))
+        return iou
     
     def track(self):
         
@@ -848,12 +938,18 @@ class MC_Crop_Tracker():
         self.time_sync_cameras()
         self.clock_time = max(self.timestamps)
         
+        
+        
+        
         while self.frame_num != -1:            
             
-            
-        
+            # clear from previous frame for plotting
+            detections = []
+            pre_loc = []
+            crop_boxes = None
             
             if self.frame_num % self.d == 0: # full frame detection
+                crop_boxes = None
                 
                 # detection step
                 start = time.time()
@@ -882,9 +978,6 @@ class MC_Crop_Tracker():
                     cv2.imshow("frame",self.original_ims[0])
                     cv2.waitKey(0)
                     cv2.destroyAllWindows()
-                
-                
-               
                     
                 # roll filter forward to this timestep
                 # For each camera, view objects at timestamp, match, and update
@@ -952,8 +1045,6 @@ class MC_Crop_Tracker():
 
 
             elif self.frame_num % self.s == 0:
-                detections = []
-                pre_loc = []
             
             
                 # get expected camera location for each existing object based on last known time
@@ -970,20 +1061,26 @@ class MC_Crop_Tracker():
                 self.time_metrics['predict'] += time.time() - start
                 
                 start = time.time()
-                obj_x = pre_loc[:,0].unsqueeze(1).repeat(1,len(self.cc_x))
-                cc_x = self.cc_x.unsqueeze(0).repeat(obj_x.shape[0],1)
-                diff = torch.abs(cc_x-obj_x)
-                cam_idx = torch.argmin(diff,dim = 1)
-                cam_names = [self.cc_ids[i] for i in cam_idx]
+                
+                # get distance to each camera center
+                obj_x = pre_loc[:,0].unsqueeze(1).repeat(1,len(self.centers))
+                cc_x = torch.tensor([item[0] for item in self.centers]).unsqueeze(0).repeat(obj_x.shape[0],1)
+                obj_y = pre_loc[:,1].unsqueeze(1).repeat(1,len(self.centers))
+                cc_y = torch.tensor([item[1] for item in self.centers]).unsqueeze(0).repeat(obj_y.shape[0],1)
+                
+                
+                diff = torch.abs(torch.pow(cc_x-obj_x,2) + torch.pow(cc_y-obj_y,2))
+                cam_idxs = torch.argmin(diff,dim = 1)
+                cam_names = [self.cameras[i] for i in cam_idxs]
                 self.time_metrics["crop and align"] += time.time() -start
                 
                 # predict time-correct a prioris in each camera
-                cam_idxs = [self.cc_to_camera_index[n] for n in cam_names]
                 obj_times = [self.timestamps[idx] for idx in cam_idxs]
                 
                 try:
-                    dts = self.filter.get_dts(obj_times)
-                    pre_locations = self.filter.view(with_direction = True,dt = dts) 
+                    dts = self.filter.get_dt(obj_times)
+                    self.filter.predict(dt = dts) 
+                    pre_locations = self.filter.objs(with_direction = True)
                 except TypeError:
                     pre_locations = {}        
                 pre_ids = []
@@ -992,7 +1089,7 @@ class MC_Crop_Tracker():
                     pre_ids.append(id)
                     pre_loc.append(pre_locations[id])
                 pre_loc = torch.from_numpy(np.array(pre_loc))
-                im_objs = self.hg.state_to_im(pre_loc,name = cam_names)
+                im_objs = self.hg.state_to_im(pre_loc.clone(),name = cam_names)
                 self.time_metrics['predict'] += time.time() - start
                 
             
@@ -1001,52 +1098,71 @@ class MC_Crop_Tracker():
                 crop_boxes = self.get_crop_boxes(im_objs)
             
                 # crop these boxes from relevant frames
-                cam_idxs = torch.stack(cam_idxs).unsqueeze(1)
-                torch_boxes = torch.cat((cam_idxs,crop_boxes),dim = 1)
-                frames = torch.stack(self.frames)
-                crops = roi_align(frames,torch_boxes,(self.cs,self.cs))
+                cidx = cam_idxs.unsqueeze(1).to(self.device).double()
+                torch_boxes = torch.cat((cidx,crop_boxes),dim = 1)
+                crops = roi_align(self.frames,torch_boxes.float(),(self.cs,self.cs))
                 self.time_metrics["crop and align"] += time.time() -start
 
                 # detect objects in crops
                 start = time.time()
                 with torch.no_grad():                       
-                     reg_boxes, classes = self.crop_detector(crops,LOCALIZE = True)
-                     confs,classes = torch.max(classes, dim = 2)
+                      reg_boxes, classes = self.crop_detector(crops,LOCALIZE = True)
+                      confs,classes = torch.max(classes, dim = 2)
 
                 del crops
                 self.time_metrics['localize'] += time.time() - start
                 
                 # convert to global frame coords
                 start = time.time()
+                crop_boxes = crop_boxes.cpu()
                 reg_boxes = reg_boxes.data.cpu()
                 classes = classes.data.cpu()
+                confs = confs.cpu()
                 self.time_metrics["load"] += time.time() - start
 
                 start = time.time()
-                reg_boxes = self.local_to_global(reg_boxes,box_scales,new_boxes)
-                self.time_metrics["post localize"]
+                reg_boxes = self.local_to_global(reg_boxes,crop_boxes)
             
             
-                # TODO -  probably need to add a step here to keep only top 100 or so boxes
+            #     # TODO -  probably need to add a step here to keep only top 100 or so boxes
 
                 # convert each box using the appropriate H into state
-                
+                n_objs = reg_boxes.shape[0]
                 cam_names_repeated = [cam for cam in cam_names for i in range(reg_boxes.shape[1])]
-                reg_boxes = reg_boxes.reshape(-1)
+                reg_boxes = reg_boxes.reshape(-1,8,2)
                 heights = self.hg.guess_heights(classes.reshape(-1))
-                reg_boxes_state = self.hg.im_to_state(reg_boxes,heights,name = cam_names_repeated)
+                reg_boxes_state = self.hg.im_to_state(reg_boxes,heights = heights,name = cam_names_repeated)
                 
-                repro_boxes = self.hg.state_to_im(boxes, name = cam_names_repeated)
+                repro_boxes = self.hg.state_to_im(reg_boxes_state, name = cam_names_repeated)
                 refined_heights = self.hg.height_from_template(repro_boxes,heights,reg_boxes)
                 reg_boxes_state = self.hg.im_to_state(reg_boxes,heights = refined_heights,name = cam_names_repeated)
 
                 # for each object, select the best box
-                best_boxes = self.select_best_box(pre_loc,reg_boxes_state)
+                detections, classes, confs = self.select_best_box(pre_loc,reg_boxes_state,confs,classes,n_objs)
+                self.time_metrics["post localize"] += time.time() - start
 
                 # update
-                self.filter.update(best_boxes,pre_ids)
+                start = time.time()
+                self.filter.update(detections[:,:5],pre_ids)
 
-
+                camera_idxs = cam_idxs
+                
+                # update classes, confs and fsld
+                for i in range(len(pre_ids)):
+                    id = pre_ids[i]
+                    conf = confs[i]
+                    cls = classes[i]
+                    
+                    if confs[i] < self.sigma_c:
+                        self.fsld[id] += 1
+                    else:
+                        self.fsld[id] = 0
+                    self.all_confs[id].append(confs)
+                    self.all_classes[id][cls.item()] += 1
+                    
+                self.time_metrics["update"] += time.time() - start
+                
+                
 
             # remove overlapping objects and anomalies
             start = time.time()
@@ -1074,7 +1190,7 @@ class MC_Crop_Tracker():
             # Plot
             start = time.time()
             if self.PLOT:
-                self.plot(detections,camera_idxs,post_locations,self.all_classes,pre_locations = pre_loc,label_len = 5)
+                self.plot(detections,camera_idxs,post_locations,self.all_classes,pre_locations = pre_loc,label_len = 5,crops = crop_boxes)
             self.time_metrics['plot'] += time.time() - start
        
             # load next frame  
@@ -1119,16 +1235,17 @@ class MC_Crop_Tracker():
 if __name__ == "__main__":
     
     # inputs
-    sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c2_0_4k.mp4",
-                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4",
-                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",]
+    sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c2_0_4k.mp4",]
+                 # "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4",
+                 # "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",]
                  #"/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c5_0_4k.mp4"
     
     # sequences = ["/home/worklab/Data/cv/video/08_06_2021/p1c2_0_4k.mp4",
     #              "/home/worklab/Data/cv/video/08_06_2021/p1c3_0_4k.mp4",
     #              "/home/worklab/Data/cv/video/08_06_2021/p1c4_0_4k.mp4"]
     
-    det_cp = "/home/worklab/Documents/derek/3D-playground/cpu_15000gt_3D.pt"
+    det_cp =  "/home/worklab/Documents/derek/3D-playground/cpu_15000gt_3D.pt"
+    crop_cp = "/home/worklab/Documents/derek/3D-playground/cpu_crop_detector_e90.pt"
     
     kf_param_path = "kf_params_naive.cpkl"
     kf_param_path = "kf_params_save2.cpkl"
@@ -1197,13 +1314,17 @@ if __name__ == "__main__":
     
     # load homography
     with open("i24_all_homography.cpkl","rb") as f:
-        hg = pickle.load(f)
-        
+        hg_old = pickle.load(f)
+        hg  = Homography()
+        hg.correspondence = hg_old.correspondence
     
     # load detector
     detector = resnet50(8)
     detector.load_state_dict(torch.load(det_cp))
-    detector = detector.to(device)
+    
+    crop_detector = resnet50(8)
+    crop_detector.load_state_dict(torch.load(crop_cp))
+    
     
     # set up filter params
     if kf_param_path is not None:
@@ -1269,7 +1390,7 @@ if __name__ == "__main__":
     cutoff_frame = 500
     OUT = "track_ims"
     
-    tracker = MC_Crop_Tracker(sequences,detector,kf_params,hg,class_dict, params = params, OUT = OUT,PLOT = True,early_cutoff = cutoff_frame)
+    tracker = MC_Crop_Tracker(sequences,detector,kf_params,hg,class_dict, params = params, OUT = OUT,PLOT = True,early_cutoff = cutoff_frame,cd = crop_detector)
     tracker.track()
     tracker.write_results_csv()
     
