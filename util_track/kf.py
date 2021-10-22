@@ -425,7 +425,7 @@ class Torch_KF(object):
             Current state of each object indexed by obj_id (int)
         """
         
-        return self.view(dt = None, with_direct = with_direction)
+        return self.view(dt = None, with_direction = with_direction)
 
 if __name__ == "__main__":
     """

@@ -172,7 +172,7 @@ class MC_Crop_Tracker():
         self.next_obj_id = 0             # next id for a new object (incremented during tracking)
         self.fsld = {}                   # fsld[id] stores frames since last detected for object id
     
-        self.all_tracks = {}             # stores states for each object
+        self.all_tracks = []             # stores states for each object
         self.all_classes = {}            # stores class evidence for each object
         self.all_confs = {}
         self.all_cameras = {}
@@ -358,7 +358,6 @@ class MC_Crop_Tracker():
                 new_times.append(detection_times[i])
                 
                 self.fsld[self.next_obj_id] = 0
-                self.all_tracks[self.next_obj_id] = np.zeros([self.n_frames,self.state_size])
                 self.all_classes[self.next_obj_id] = np.zeros(8)
                 self.all_confs[self.next_obj_id] = []
                 self.all_cameras[self.next_obj_id] = []
@@ -1173,13 +1172,19 @@ class MC_Crop_Tracker():
             
             # get all object locations at set clock time and store in output dict
             start = time.time()
-            self.all_times.append(self.clock_time)
-            dts = self.filter.get_dt(self.clock_time)
+            
+            # we use the mean time as the clock time
+            clock_time = sum(self.timestamps) / len(self.timestamps)
+            
+            self.all_times.append(clock_time)
+            dts = self.filter.get_dt(clock_time)
+            
             post_ids,post_locations = self.filter.view(with_direction = True,dt = dts)
             for i in range(len(post_locations)):
                 id = post_ids[i]
                 box = post_locations[i]
-                self.all_tracks[id][self.frame_num,:] = box[:self.state_size]   
+                datum =  [  id,clock_time,box[:self.state_size]   ]
+                self.all_tracks.append(datum)
             self.time_metrics['store'] += time.time() - start  
             
             
@@ -1198,11 +1203,10 @@ class MC_Crop_Tracker():
             self.time_metrics["load"] += time.time() - start
 
             # increment clock time at fixed rate,regardless of actual frame timestamps
-            self.clock_time += 1/30.0
             
             fps = self.frame_num / (time.time() - self.start_time)
             fps_noload = self.frame_num / (time.time() - self.start_time - self.time_metrics["load"] - self.time_metrics["plot"])
-            print("\rTracking frame {} of {} at {:.1f} FPS ({:.1f} FPS without loading and plotting)".format(self.frame_num,self.n_frames,fps,fps_noload), end = '\r', flush = True)
+            #print("\rTracking frame {} of {} at {:.1f} FPS ({:.1f} FPS without loading and plotting)".format(self.frame_num,self.n_frames,fps,fps_noload), end = '\r', flush = True)
             
             if self.frame_num > self.cutoff_frame:
                 for item in self.time_metrics.items():
@@ -1289,80 +1293,67 @@ class MC_Crop_Tracker():
             # write main chunk
             out.writerow(data_header)
             print("\n")
+            gen = "3D Detector"
+            camera = "p1c1" # default dummy value
             
-            for frame in range(self.n_frames):
-                if frame > self.cutoff_frame:
-                    break
-                print("\rWriting outputs for frame {} of {}".format(frame,self.n_frames), end = '\r', flush = True)
+            for i,item in enumerate(self.all_tracks):
+                print("\rWriting outputs for frame-object {} of {}".format(i,len(self.all_tracks)), end = '\r', flush = True)
+                id = item[0]
+                timestamp = item[1]
+                state = item[2]
+                
+                if len(self.all_classes[id]) > self.f_init: # remove short anomalous tracks
+                    
+                    state = state.float()
+                    
+                    if state[0] != 0:
+                        
+                        # generate space coords
+                        space = self.hg.state_to_space(state.unsqueeze(0))
+                        space = space.squeeze(0)[:4,:2]
+                        flat_space = list(space.reshape(-1).data.numpy())
+                        
+                        # generate im coords
+                        bbox_3D = self.hg.state_to_im(state.unsqueeze(0),name = camera)
+                        flat_3D = list(bbox_3D.squeeze(0).reshape(-1).data.numpy())
+                        
+                        # generate im 2D bbox
+                        minx = torch.min(bbox_3D[:,:,0],dim = 1)[0].item()
+                        maxx = torch.max(bbox_3D[:,:,0],dim = 1)[0].item()
+                        miny = torch.min(bbox_3D[:,:,1],dim = 1)[0].item()
+                        maxy = torch.max(bbox_3D[:,:,1],dim = 1)[0].item()
+                        
+                        
+                        obj_line = []
+                        
+                        obj_line.append("-") # frame number is not useful in this data
+                        obj_line.append(timestamp)
+                        obj_line.append(id)
+                        obj_line.append(self.class_dict[np.argmax(self.all_classes[id])])
+                        obj_line.append(minx)
+                        obj_line.append(miny)
+                        obj_line.append(maxx)
+                        obj_line.append(maxy)
+                        obj_line.append(0)
+                        obj_line.append(0)
 
-                try:
-                    timestamp = self.all_times[frame]
-                except:
-                    timestamp = -1
-                
-                # if frame % self.d == 0:
-                #     gen = "3D Detector"
-                # elif self.localizer is not None and (frame % self.d)%self.s == 0:
-                #     gen = "3D Localizer"
-                # else:
-                #     gen = "Filter prediction"
-                gen = "3D Detector"
-                camera = "p1c1" # efault dummy value
-                
-                for id in self.all_tracks:
-                    if len(self.all_classes[id]) > self.f_init: # remove short anomalous tracks
+                        obj_line.append(gen)
+                        obj_line = obj_line + flat_3D + flat_space 
+                        state = state.data.numpy()
+                        obj_line.append(state[5])
                         
-                        state = self.all_tracks[id][frame]
-                        state = torch.from_numpy(state).float()
+                        obj_line.append(camera)
                         
-                        if state[0] != 0:
-                            
-                            # generate space coords
-                            space = self.hg.state_to_space(state.unsqueeze(0))
-                            space = space.squeeze(0)[:4,:2]
-                            flat_space = list(space.reshape(-1).data.numpy())
-                            
-                            # generate im coords
-                            bbox_3D = self.hg.state_to_im(state.unsqueeze(0),name = camera)
-                            flat_3D = list(bbox_3D.squeeze(0).reshape(-1).data.numpy())
-                            
-                            # generate im 2D bbox
-                            minx = torch.min(bbox_3D[:,:,0],dim = 1)[0].item()
-                            maxx = torch.max(bbox_3D[:,:,0],dim = 1)[0].item()
-                            miny = torch.min(bbox_3D[:,:,1],dim = 1)[0].item()
-                            maxy = torch.max(bbox_3D[:,:,1],dim = 1)[0].item()
-                            
-                            
-                            obj_line = []
-                            
-                            obj_line.append(frame)
-                            obj_line.append(timestamp)
-                            obj_line.append(id)
-                            obj_line.append(self.class_dict[np.argmax(self.all_classes[id])])
-                            obj_line.append(minx)
-                            obj_line.append(miny)
-                            obj_line.append(maxx)
-                            obj_line.append(maxy)
-                            obj_line.append(0)
-                            obj_line.append(0)
-    
-                            obj_line.append(gen)
-                            obj_line = obj_line + flat_3D + flat_space 
-                            state = state.data.numpy()
-                            obj_line.append(state[5])
-                            
-                            obj_line.append(camera)
-                            
-                            obj_line.append(0) # acceleration = 0 assumption
-                            obj_line.append(state[6])
-                            obj_line.append(state[0])
-                            obj_line.append(state[1])
-                            obj_line.append(np.pi/2.0 if state[5] == -1 else 0)
-                            obj_line.append(state[3])
-                            obj_line.append(state[2])
-                            obj_line.append(state[4])
-    
-                            out.writerow(obj_line)
+                        obj_line.append(0) # acceleration = 0 assumption
+                        obj_line.append(state[6])
+                        obj_line.append(state[0])
+                        obj_line.append(state[1])
+                        obj_line.append(np.pi/2.0 if state[5] == -1 else 0)
+                        obj_line.append(state[3])
+                        obj_line.append(state[2])
+                        obj_line.append(state[4])
+
+                        out.writerow(obj_line)
                             
                             
         # end file writing
@@ -1533,7 +1524,7 @@ if __name__ == "__main__":
     
     #%% Run tracker
     pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/temp_3D_track_outputs.csv"
-    cutoff_frame = 3000
+    cutoff_frame = 1000
     OUT = "track_ims"
     
     tracker = MC_Crop_Tracker(sequences,detector,kf_params,hg,class_dict, params = params, OUT = OUT,PLOT = False,early_cutoff = cutoff_frame,cd = crop_detector)
