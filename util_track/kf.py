@@ -251,10 +251,15 @@ class Torch_KF(object):
             
             # since rows were deleted from X and P, shift idxs accordingly
             new_id = 0
+            removals = []
             for id in self.obj_idxs:
                 if self.obj_idxs[id] is not None:
                     self.obj_idxs[id] = new_id
                     new_id += 1
+                else:
+                    removals.append(id)
+            for id in removals:
+                del self.obj_idxs[id]
     
     def view(self,dt = None,with_direction = False):
         """
@@ -262,24 +267,26 @@ class Torch_KF(object):
         (i.e. non in-place version of predict())
         """
         if self.X is None or len(self.X) == 0:
-            return {}
+            return [],[]
         
         if dt is None:
-            dt = self.dt_default
+            X_pred = self.X
+         
+        else:
+            F_rep = self.F.unsqueeze(0).repeat(len(self.X),1,1)
+            F_rep[:,0,5] = self.D * dt
+            X_pred = torch.bmm(F_rep,self.X.unsqueeze(2)).squeeze(2)
+        
+        states = X_pred
+        
+        inverted = dict([(self.obj_idxs[key],key) for key in self.obj_idxs.keys()])
+        id_list = [inverted[i] for i in range(states.shape[0])]
+        # get list of IDs - i.e. what obj id does each row correspond to 
+        
+        if with_direction:
+            states = torch.cat((states[:,:-1],self.D.float().unsqueeze(1),states[:,-1:]),dim = 1)
             
-        F_rep = self.F.unsqueeze(0).repeat(len(self.X),1,1)
-        F_rep[:,0,5] = self.D * dt
-        X_pred = torch.bmm(F_rep,self.X.unsqueeze(2)).squeeze(2)
-
-        out_dict = {}
-        for id in self.obj_idxs:
-            idx = self.obj_idxs[id]
-            if idx is not None:
-                if with_direction:
-                    out_dict[id] = torch.cat((X_pred[idx,:-1],self.D[idx:idx+1].float(),X_pred[idx,-1:]),dim = 0).data.cpu().numpy()
-                else:
-                    out_dict[id] = self.X[idx,:].data.cpu().numpy()
-        return out_dict
+        return id_list,states
          
     
     def predict(self,dt = None):
@@ -418,24 +425,7 @@ class Torch_KF(object):
             Current state of each object indexed by obj_id (int)
         """
         
-        if with_time:
-            times = {}
-        
-        out_dict = {}
-        for id in self.obj_idxs:
-            idx = self.obj_idxs[id]
-            if idx is not None:
-                if with_direction:
-                    out_dict[id] = torch.cat((self.X[idx,:-1],self.D[idx:idx+1].float(),self.X[idx,-1:]),dim = 0).data.cpu().numpy()
-                else:
-                    out_dict[id] = self.X[idx,:].data.cpu().numpy()
-                if with_time:
-                    times[id] = self.T[idx]
-        
-        if with_time:
-            return out_dict, times
-                
-        return out_dict
+        return self.view(dt = None, with_direct = with_direction)
 
 if __name__ == "__main__":
     """
