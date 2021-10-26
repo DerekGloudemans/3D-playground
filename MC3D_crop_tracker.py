@@ -75,10 +75,13 @@ class MC_Crop_Tracker():
         self.f_max = params['f_max'] if 'f_max' in params else 5             
         self.cs = params['cs'] if 'cs' in params else 112                                       # size of square crops for crop detector       
         self.b = params["b"] if "b" in params else 1.25                                         # box expansion ratio for square crops (size = max object x/y size * b)
-        self.d = params['d'] if 'd' in params else 16                                            # dense detection frequency (1 is every frame, -1 is never, 2 is every 2 frames, etc)
-        self.s = params['s'] if 's' in params else 2                                           # measurement frequency (if 1, every frame, if 2, measure every 2 frames, etc)
+        self.d = params['d'] if 'd' in params else 1                                            # dense detection frequency (1 is every frame, -1 is never, 2 is every 2 frames, etc)
+        self.s = params['s'] if 's' in params else 1                                           # measurement frequency (if 1, every frame, if 2, measure every 2 frames, etc)
         self.q = params["q"] if "q" in params else 1                                            # target number of measurement queries per object per frame (assuming more than one camera is available)
         self.max_size = params['max_size'] if 'max_size' in params else torch.tensor([85,15,15])# max object size (L,W,H) in feet
+        
+        self.est_ts = True
+        self.ts_alpha = 0.05
         
         self.x_range = params["x_range"] if 'x_range' in params else [0,2000]                   # track objects until they exit this range of state space
         camera_centers = params["cam_centers"] if "cam_centers" in params else {
@@ -204,6 +207,8 @@ class MC_Crop_Tracker():
             self.ts = pickle.load(f)
         self.timestamps = [0 for i in self.loaders]
         
+        self.ts_bias = [0 for i in self.loaders]
+        
         print("Initialized MC Crop Tracker for {} sequences".format(len(self.cameras)))
         
     def __next__(self):
@@ -240,19 +245,83 @@ class MC_Crop_Tracker():
         except TypeError:
             pass # None for timestamp value
         
-    def estimate_ts_bias(self):
+    def estimate_ts_bias(self,boxes,camera_idxs):
         """
         Timestamps associated with each camera are assumed to have Gaussian error.
         The bias of this error is estimated as follows:
-            On full frame detections, We find all sets of detection matchings across
-            cameras. For each pair that is also associated with a tracklet, we estimate
-            the time offset between the two based on object velocity. We then 
-            greedily solve the global time adjustment problem to minimize the 
-            deviation between matched detections across cameras, after adjustment
-            
-            detections
-            
+        On full frame detections, We find all sets of detection matchings across
+        cameras. We estimate the expected time offset between the two based on 
+        average object velocity in the same direction. We then 
+        greedily solve the global time adjustment problem to minimize the 
+        deviation between matched detections across cameras, after adjustment
+        
+        boxes - [d,6] array of detected boxes in state form
+        camera_idxs - [d] array of camera indexes
         """
+        
+        if len(camera_idxs) == 0:
+            return
+        
+        # get average velocity per direction
+        _,objs = self.filter.view(with_direction = True)
+        if len(objs) == 0:
+            return
+        WB_idx = torch.where(objs[:,5] == -1)[0]
+        EB_idx = torch.where(objs[:,5] ==  1)[0]
+        WB_vel = torch.mean(objs[WB_idx,6]) * -1
+        EB_vel = torch.mean(objs[EB_idx,6])
+        
+        # boxes is [d,6] - need to convert into xmin ymin xmax ymax form
+        boxes_space = self.hg.state_to_space(boxes)
+        
+        # convert into xmin ymin xmax ymax form        
+        boxes_new =   torch.zeros([boxes_space.shape[0],4])
+        boxes_new[:,0] = torch.min(boxes_space[:,0:4,0],dim = 1)[0]
+        boxes_new[:,2] = torch.max(boxes_space[:,0:4,0],dim = 1)[0]
+        boxes_new[:,1] = torch.min(boxes_space[:,0:4,1],dim = 1)[0]
+        boxes_new[:,3] = torch.max(boxes_space[:,0:4,1],dim = 1)[0]
+        
+        # get iou for each pair
+        dup1 = boxes_new.unsqueeze(0).repeat(boxes.shape[0],1,1).double()
+        dup2 = boxes_new.unsqueeze(1).repeat(1,boxes.shape[0],1).double()
+        iou = self.md_iou(dup1,dup2).reshape(boxes.shape[0],boxes.shape[0])
+        
+        # store offsets - offset is position in cam 2 relative to cam1
+        x_offsets = []
+        for i in range(iou.shape[0]):
+            for j in range(i,iou.shape[1]):
+                if i != j and camera_idxs[i] != camera_idxs[j]:
+                    if iou[i,j] > self.phi_nms_space:
+                        x_offsets.append([camera_idxs[i].item(),camera_idxs[j].item(), boxes[j,0] - boxes[i,0],boxes[i,5]])
+                        x_offsets.append([camera_idxs[j].item(),camera_idxs[i].item(), boxes[i,0] - boxes[j,0],boxes[i,5]])
+        
+        # Each x_offsets item is [camera 1, camera 2, offset, and direction]
+        dx = torch.tensor([item[2] for item in x_offsets])
+        dt_expected =  torch.tensor([self.timestamps[item[1]] - self.timestamps[item[0]] for item in x_offsets]) # not 100% sure about the - sign here - logically I cannot work out its value
+        
+        #tensorize velocity
+        vel = torch.ones(len(x_offsets)) * EB_vel
+        for d_idx,item in enumerate(x_offsets):
+            if item[3] == -1:
+                vel[d_idx] = WB_vel
+        
+        # get observed time offset (x_offset / velocity)
+        dt_obs = dx/vel
+        time_error = dt_obs - dt_expected
+
+        # each time_error corresponds to a camera pair
+        # we could solve this as a linear program to minimize the total adjusted time_error
+        # instead, we'll do a stochastic approximation
+        
+        # for each time error, we update self.ts_bias according to:
+        # self.ts_bias[cam1] = (1-alpha)* self.ts_bias[cam1] + alpha* (-time_error + self.ts_bias[cam2])
+        for e_idx,te in enumerate(time_error):
+            cam1 = x_offsets[e_idx][0]
+            cam2 = x_offsets[e_idx][1]
+            if cam1 != 0: # by default we define all offsets relative to sequence 0
+                self.ts_bias[cam1] = float((1-self.ts_alpha) * self.ts_bias[cam1] + self.ts_alpha * (-te + self.ts_bias[cam2]))
+        
+        
         
     def parse_detections(self,scores,labels,boxes,camera_idxs,n_best = 200,perform_nms = True,refine_height = False):
         """
@@ -270,7 +339,7 @@ class MC_Crop_Tracker():
                   labels - [d_new] array with kept classes
         """
         if len(scores) == 0:
-            return [],[],[]
+            return [],[],[],[]
         
         # remove duplicates
         cutoff = torch.ones(scores.shape) * self.sigma_d
@@ -282,7 +351,7 @@ class MC_Crop_Tracker():
         camera_idxs = camera_idxs[keepers]
         
         if len(detections) == 0:
-            return [],[],[], []
+            return [],[],[],[]
         # Homography object expects boxes in the form [d,8,2] - reshape detections
         detections = detections.reshape(-1,10,2)
         detections = detections[:,:8,:] # drop 2D boxes
@@ -307,13 +376,17 @@ class MC_Crop_Tracker():
             refined_heights = self.hg.height_from_template(repro_boxes,heights,detections)
             boxes = self.hg.im_to_state(detections,heights = refined_heights,name = cam_list)
         
+        # find all matching pairs of detections
+        if self.est_ts:
+            self.estimate_ts_bias(boxes.clone(),camera_idxs)
+        
         if perform_nms: # NOTE - detections are at slightly different times from different cameras
             idxs = self.space_nms(boxes,scores,threshold = self.phi_nms_space)
             labels = labels[idxs]
             boxes = boxes[idxs]
             scores = scores[idxs]
             camera_idxs = camera_idxs[idxs]
-        
+ 
         return boxes, labels, scores, camera_idxs
  
     def manage_tracks(self,detections,matchings,pre_ids,labels,scores,cameras,detection_times,mean_object_sizes = True):
@@ -446,18 +519,6 @@ class MC_Crop_Tracker():
             for id in ids:
                 if id not in keep_ids:
                     removals.append(id)
-            
-            if False: # old method
-                for i in range(len(idxs)):
-                    for j in range(len(idxs)):
-                        if i != j:
-                            iou_metric = self.iou(boxes_new[i],boxes_new[j])
-                            if iou_metric > self.phi_over:
-                                # determine which object has been around longer
-                                if len(self.all_classes[i]) > len(self.all_classes[j]):
-                                    removals.append(idxs[j])
-                                else:
-                                    removals.append(idxs[i])
             
             if len(removals) > 0:
                 removals = list(set(removals))
@@ -630,7 +691,7 @@ class MC_Crop_Tracker():
         
         second = second.unsqueeze(0).repeat(f,1,1).double()
         first = first.unsqueeze(1).repeat(1,s,1).double()
-        dist = self.md_iou(first,second)
+        dist = 1.0 - self.md_iou(first,second)
         
         
         
@@ -695,7 +756,7 @@ class MC_Crop_Tracker():
         class_dict : dict
             indexed by class int, the string class names for each class
         frame : int, optional
-            If not none, the resulting image will be saved with this frame number in file name.
+            If not None, the resulting image will be saved with this frame number in file name.
             The default is None.
         """
         for im_idx,im in enumerate(self.original_ims):
@@ -708,16 +769,6 @@ class MC_Crop_Tracker():
             if pre_locations is not None and len(pre_locations) > 0 and not single_box:
                 pre_boxes = self.hg.state_to_im(pre_locations,name = cam_id)
                 im = self.hg.plot_boxes(im,pre_boxes,color = (0,255,255))
-            
-            # plot detection bboxes
-            if len(detections) > 0:
-                cam_detections = []
-                for idx in range(len(detections)):
-                    if camera_idxs[idx] == im_idx:
-                        cam_detections.append(detections[idx])
-                if len(cam_detections) > 0:
-                    cam_detections = torch.stack(cam_detections)
-                    im = self.hg.plot_boxes(im, self.hg.state_to_im(cam_detections,name = cam_id),thickness = 1, color = (0,0,255))
             
             # plot crops
             if crops is not None and not fancy_crop:
@@ -748,6 +799,19 @@ class MC_Crop_Tracker():
                 boxes = self.hg.state_to_im(boxes,name = cam_id)
                 im = self.hg.plot_boxes(im,boxes,color = (0.6,0.8,0),thickness = tn)
             
+            # plot estimated locations after adjusting for camera timestamp bias
+            dts = self.filter.get_dt(self.timestamps[im_idx] + self.ts_bias[im_idx])
+            ids,post_boxes = self.filter.view(with_direction = True,dt = dts)
+            
+            boxes = []
+            for i,row in enumerate(post_boxes):
+                boxes.append(row[0:6])
+            if len(boxes) > 0:
+                boxes = torch.from_numpy(np.stack(boxes))
+                boxes = self.hg.state_to_im(boxes,name = cam_id)
+                im = self.hg.plot_boxes(im,boxes,color = (0.2,0.9,0),thickness = tn)
+                
+            
             # plot time unadjusted boxes
             if not single_box:
                 post_boxes = self.filter.objs(with_direction = True)
@@ -758,6 +822,16 @@ class MC_Crop_Tracker():
                     boxes = torch.from_numpy(np.stack(boxes))
                     boxes = self.hg.state_to_im(boxes,name = cam_id)
                     im = self.hg.plot_boxes(im,boxes,color = (0.2,0.2,0.2),thickness = 1)
+            
+            # plot detection bboxes
+            if len(detections) > 0:
+                cam_detections = []
+                for idx in range(len(detections)):
+                    if camera_idxs[idx] == im_idx:
+                        cam_detections.append(detections[idx])
+                if len(cam_detections) > 0:
+                    cam_detections = torch.stack(cam_detections)
+                    im = self.hg.plot_boxes(im, self.hg.state_to_im(cam_detections,name = cam_id),thickness = 1, color = (0,0,255))
             
             if crops is not None and fancy_crop:
                 # make a weighted im with 0.5 x intensity outside of crops
@@ -806,9 +880,13 @@ class MC_Crop_Tracker():
             
             im = cv2.addWeighted(im,0.7,im2,0.3,0)
             
+            # print the estimated time_error for camera relative to first sequence
+            if self.est_ts:
+                error_label = "Estimated time bias: {:.4f}s (~{:.1f}ft)".format(self.ts_bias[im_idx],float(self.ts_bias[im_idx]*self.filter.mu_v))
+                text_size = 1.6
+                im = cv2.putText(im, error_label, (20,30), cv2.FONT_HERSHEY_PLAIN,text_size, [1,1,1], 2)
+                im = cv2.putText(im, error_label, (20,30), cv2.FONT_HERSHEY_PLAIN,text_size, [0,0,0], 1)
             
-            
-        
             if len(self.writers) > 0:
                 self.writers[im_idx](im)
                 
@@ -1037,14 +1115,13 @@ class MC_Crop_Tracker():
                 
                 # for each match, we roll the relevant object time forward to the time of the detection
                 # select the time for each relevant detection
-                    
                 start = time.time()
                 if len(matchings) > 0: # we only need to predict object locations for objects with updates
                     filter_idxs = [match[0] for match in matchings]
                     match_times = [self.timestamps[camera_idxs[match[1]]] for match in matchings]
                     dts = self.filter.get_dt(match_times,idxs = filter_idxs)
                     self.filter.predict(dt = dts)
-                    
+                        
                 detection_times = [self.timestamps[cam_idx] for cam_idx in camera_idxs]
                 self.manage_tracks(detections,matchings,pre_ids,labels,scores,camera_idxs,detection_times)
 
@@ -1547,7 +1624,7 @@ if __name__ == "__main__":
     cutoff_frame = 1000
     OUT = "track_ims"
     
-    tracker = MC_Crop_Tracker(sequences,detector,kf_params,hg,class_dict, params = params, OUT = OUT,PLOT = False,early_cutoff = cutoff_frame,cd = crop_detector)
+    tracker = MC_Crop_Tracker(sequences,detector,kf_params,hg,class_dict, params = params, OUT = OUT,PLOT = True,early_cutoff = cutoff_frame,cd = crop_detector)
     tracker.track()
     tracker.write_results_csv()
     
