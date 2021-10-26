@@ -75,8 +75,8 @@ class MC_Crop_Tracker():
         self.f_max = params['f_max'] if 'f_max' in params else 5             
         self.cs = params['cs'] if 'cs' in params else 112                                       # size of square crops for crop detector       
         self.b = params["b"] if "b" in params else 1.25                                         # box expansion ratio for square crops (size = max object x/y size * b)
-        self.d = params['d'] if 'd' in params else 8                                            # dense detection frequency (1 is every frame, -1 is never, 2 is every 2 frames, etc)
-        self.s = params['s'] if 's' in params else 2                                           # measurement frequency (if 1, every frame, if 2, measure every 2 frames, etc)
+        self.d = params['d'] if 'd' in params else 12                                            # dense detection frequency (1 is every frame, -1 is never, 2 is every 2 frames, etc)
+        self.s = params['s'] if 's' in params else 4                                           # measurement frequency (if 1, every frame, if 2, measure every 2 frames, etc)
         self.q = params["q"] if "q" in params else 1                                            # target number of measurement queries per object per frame (assuming more than one camera is available)
         self.max_size = params['max_size'] if 'max_size' in params else torch.tensor([85,15,15])# max object size (L,W,H) in feet
         
@@ -270,6 +270,10 @@ class MC_Crop_Tracker():
         EB_idx = torch.where(objs[:,5] ==  1)[0]
         WB_vel = torch.mean(objs[WB_idx,6]) * -1
         EB_vel = torch.mean(objs[EB_idx,6])
+        if torch.isnan(WB_vel):
+            WB_vel = -self.filter.mu_v   
+        if torch.isnan(EB_vel):
+            EB_vel = self.filter.mu_v
         
         # boxes is [d,6] - need to convert into xmin ymin xmax ymax form
         boxes_space = self.hg.state_to_space(boxes)
@@ -668,7 +672,9 @@ class MC_Crop_Tracker():
         
         if len(first) == 0 or len(second) == 0:
             return []
-        
+        fi = first.clone()
+
+
         # first and second are in state form - convert to space form
         first = self.hg.state_to_space(first.clone())
         boxes_new = torch.zeros([first.shape[0],4])
@@ -710,7 +716,8 @@ class MC_Crop_Tracker():
         try:
             a, b = linear_sum_assignment(dist.data.numpy())
         except ValueError:
-            print(dist,first,second)
+            print(dist, fi)
+            return []
             raise Exception
         
         # convert into expected form
@@ -780,7 +787,7 @@ class MC_Crop_Tracker():
                         im = cv2.rectangle(im,c1,c2,(255,255,255),1)
             
             # plot estimated locations before adjusting for camera timestamp bias
-            if True:
+            if False:
                 dts = self.filter.get_dt(self.timestamps[im_idx])
                 _,boxes = self.filter.view(with_direction = True,dt = dts)
                 if len(boxes) > 0:
@@ -1116,13 +1123,6 @@ class MC_Crop_Tracker():
                         
                 detection_times = [self.timestamps[cam_idx] + self.ts_bias[cam_idx] for cam_idx in camera_idxs]
                 self.manage_tracks(detections,matchings,pre_ids,labels,scores,camera_idxs,detection_times)
-
-                # print status for one object
-                if False:
-                    objs = self.filter.objs()
-                    key = list(objs.keys())[0]
-                    box = objs[key]
-                    print("At filter time {} and frame times {}, obj {} is at X position {}ft with speed {}fps".format(self.filter.T[0],self.timestamps,key,box[0],box[-1]))
 
                 # for objects not detected in any camera view
                 updated = list(set(self.updated_this_frame))
@@ -1616,7 +1616,7 @@ if __name__ == "__main__":
     cutoff_frame = 1000
     OUT = "track_ims"
     
-    tracker = MC_Crop_Tracker(sequences,detector,kf_params,hg,class_dict, params = params, OUT = OUT,PLOT = True,early_cutoff = cutoff_frame,cd = crop_detector)
+    tracker = MC_Crop_Tracker(sequences,detector,kf_params,hg,class_dict, params = params, OUT = OUT,PLOT = False,early_cutoff = cutoff_frame,cd = crop_detector)
     tracker.track()
     tracker.write_results_csv()
     
