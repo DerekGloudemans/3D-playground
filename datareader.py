@@ -229,12 +229,13 @@ class Data_Reader():
                     next(cam)
                     
             # advance current labels until camera timestamp is between current and next set of label timestamps
-            
+            if next_ts is None:
+                break
             while max_time > next_ts:
                 if next_ts is not None:
                     ts_data,ts,next_ts = next(self)
-            if next_ts is None:
-                break
+                if next_ts is None:
+                    break
             
             for camera in cameras:
                 cam_ts = camera.ts

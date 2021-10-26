@@ -240,7 +240,20 @@ class MC_Crop_Tracker():
         except TypeError:
             pass # None for timestamp value
         
-     
+    def estimate_ts_bias(self):
+        """
+        Timestamps associated with each camera are assumed to have Gaussian error.
+        The bias of this error is estimated as follows:
+            On full frame detections, We find all sets of detection matchings across
+            cameras. For each pair that is also associated with a tracklet, we estimate
+            the time offset between the two based on object velocity. We then 
+            greedily solve the global time adjustment problem to minimize the 
+            deviation between matched detections across cameras, after adjustment
+            
+            detections
+            
+        """
+        
     def parse_detections(self,scores,labels,boxes,camera_idxs,n_best = 200,perform_nms = True,refine_height = False):
         """
         Removes low confidence detection, converts detections to state space, and
@@ -294,7 +307,7 @@ class MC_Crop_Tracker():
             refined_heights = self.hg.height_from_template(repro_boxes,heights,detections)
             boxes = self.hg.im_to_state(detections,heights = refined_heights,name = cam_list)
         
-        if perform_nms: # we don't do this because detections are at different times from different cameras
+        if perform_nms: # NOTE - detections are at slightly different times from different cameras
             idxs = self.space_nms(boxes,scores,threshold = self.phi_nms_space)
             labels = labels[idxs]
             boxes = boxes[idxs]
@@ -400,7 +413,6 @@ class MC_Crop_Tracker():
         self.time_metrics['add and remove'] += time.time() - start
         
     
-    # TODO - I THINK THIS FUNCTION IS WAY TOO SLOW, CONVERT TO TENSOR OPS
     def remove_overlaps(self):
         """
         Checks IoU between each set of tracklet objects and removes the newer tracklet
@@ -612,22 +624,30 @@ class MC_Crop_Tracker():
         boxes_new[:,1] = torch.min(second[:,0:4,1],dim = 1)[0]
         boxes_new[:,3] = torch.max(second[:,0:4,1],dim = 1)[0]
         second = boxes_new
-    
         
-        # find distances between first and second
-        if False:
-            dist = np.zeros([len(first),len(second)])
-            for i in range(0,len(first)):
-                for j in range(0,len(second)):
-                    dist[i,j] = np.sqrt((first[i,0]-second[j,0])**2 + (first[i,1]-second[j,1])**2)
-        else:
-            dist = np.zeros([len(first),len(second)])
-            for i in range(0,len(first)):
-                for j in range(0,len(second)):
-                    dist[i,j] = 1 - self.iou(first[i],second[j].data.numpy())
+        f = first.shape[0]
+        s = second.shape[0]
+        
+        second = second.unsqueeze(0).repeat(f,1,1).double()
+        first = first.unsqueeze(1).repeat(1,s,1).double()
+        dist = self.md_iou(first,second)
+        
+        
+        
+        # # find distances between first and second
+        # if False:
+        #     dist = np.zeros([len(first),len(second)])
+        #     for i in range(0,len(first)):
+        #         for j in range(0,len(second)):
+        #             dist[i,j] = np.sqrt((first[i,0]-second[j,0])**2 + (first[i,1]-second[j,1])**2)
+        # else:
+        #     dist = np.zeros([len(first),len(second)])
+        #     for i in range(0,len(first)):
+        #         for j in range(0,len(second)):
+        #             dist[i,j] = 1 - self.iou(first[i],second[j].data.numpy())
                 
         try:
-            a, b = linear_sum_assignment(dist)
+            a, b = linear_sum_assignment(dist.data.numpy())
         except ValueError:
             print(dist,first,second)
             raise Exception
@@ -1206,7 +1226,7 @@ class MC_Crop_Tracker():
             
             fps = self.frame_num / (time.time() - self.start_time)
             fps_noload = self.frame_num / (time.time() - self.start_time - self.time_metrics["load"] - self.time_metrics["plot"])
-            #print("\rTracking frame {} of {} at {:.1f} FPS ({:.1f} FPS without loading and plotting)".format(self.frame_num,self.n_frames,fps,fps_noload), end = '\r', flush = True)
+            print("\rTracking frame {} of {} at {:.1f} FPS ({:.1f} FPS without loading and plotting)".format(self.frame_num,self.n_frames,fps,fps_noload), end = '\r', flush = True)
             
             if self.frame_num > self.cutoff_frame:
                 for item in self.time_metrics.items():
