@@ -112,6 +112,8 @@ class Data_Reader():
                 if HEADERS:
                     if len(row) > 0 and row[0] == "Frame #":
                         HEADERS = False
+                        camera_names = row[45]
+                        cameras = re.findall("(p\dc\d)",camera_names)
                     continue
         
                 else:
@@ -127,6 +129,13 @@ class Data_Reader():
                     cls     =       row[3]
                     ts      = float(row[1])
                     
+                    camera_offsets = row[45]
+                    camera_offsets = camera_offsets.strip("[").strip("]").split(",")
+                    offsets = [float(item) for item in camera_offsets]
+                    
+                    offsets = dict([(cameras[i],offsets[i]) for i in range(len(offsets))])
+                    
+                    
                     datum = {
                         "timestamp":ts,
                         "id":id,
@@ -137,7 +146,8 @@ class Data_Reader():
                         "w":w,
                         "h":h,
                         "direction":direc,
-                        "v":vel
+                        "v":vel,
+                        "ts_bias":offsets
                         }
                     
                     if ts == current_timestamp:
@@ -242,9 +252,12 @@ class Data_Reader():
                 
                 # stack objects as tensor and aggregate other data for label
                 boxes = torch.stack([torch.tensor([obj["x"],obj["y"],obj["l"],obj["w"],obj["h"],obj["direction"],obj["v"]]) for obj in [ts_data[key] for key in ts_data.keys()]])
-
+                try:
+                    cam_ts_bias =  ts_data[list(ts_data.keys())[0]]["ts_bias"][camera.name]
+                except KeyError:
+                    cam_ts_bias = 0
                 # predict object positions assuming constant velocity
-                dt = cam_ts - ts
+                dt = cam_ts + cam_ts_bias - ts
                 boxes[:,0] += boxes[:,6] * dt * boxes[:,5] 
                 
                 # convert into image space

@@ -7,6 +7,54 @@ import numpy as np
 import cv2
 import sys, os
 import csv
+import _pickle as pickle
+
+def get_homographies(save = False):
+    try:
+        with open("i24_all_homography.cpkl","rb") as f:
+            hg = pickle.load(f)
+        
+    except FileNotFoundError:
+        print("Regenerating i24 homgraphy...")
+        
+        hg = Homography()
+        for camera_name in ["p1c1","p1c2","p1c3","p1c4","p1c5","p1c6","p2c1","p2c2","p2c3","p2c4","p2c5","p2c6","p3c1","p3c2","p3c3"]:
+            
+            print("Adding camera {} to homography".format(camera_name))
+            
+            data_file = "/home/worklab/Data/dataset_alpha/manual_correction/rectified_{}_0_track_outputs_3D.csv".format(camera_name)
+            vp_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp/{}_axes.csv".format(camera_name)
+            point_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform/{}_im_lmcs_transform_points.csv".format(camera_name)
+
+            labels,data = load_i24_csv(data_file)
+            
+            # ensure there are some boxes on which to fit
+            i = 0
+            frame_data = data[i]
+            while len(frame_data) == 0:
+                i += 1
+                frame_data = data[i]
+                
+            # convert labels from first frame into tensor form
+            boxes = []
+            classes = []
+            for item in frame_data:
+                if len(item[11]) > 0:
+                    boxes.append(np.array(item[11:27]).astype(float))
+                    classes.append(item[3])
+            boxes = torch.from_numpy(np.stack(boxes))
+            boxes = torch.stack((boxes[:,::2],boxes[:,1::2]),dim = -1)
+        
+            # load homography
+            hg.add_i24_camera(point_file,vp_file,camera_name)
+            heights = hg.guess_heights(classes)
+            hg.scale_Z(boxes,heights,name = camera_name)
+        
+        if save:
+            with open("i24_all_homography.cpkl","wb") as f:
+                pickle.dump(hg,f)
+    return hg
+
 
 def line_to_point(line,point):
     """
@@ -594,6 +642,7 @@ class Homography():
 
             #print("New C_grid: {}".format(C_grid.round(4)))
             iteration += 1
+        print("Best Error: {}".format(best_error))
         
         
 
@@ -641,6 +690,39 @@ class Homography():
             
         return im
         
+    def plot_test_point(self,point,im_dir):
+        """
+        Plot a single point defined in 3D space, in each camera view in which
+        that point is visible
+        
+        im_dir - (string) directory with an example image for each correspondence
+        point  - *list of length 3) defining a point in 3D space
+        """
+        point = torch.tensor(point).unsqueeze(0).unsqueeze(0)
+
+        # get image for each correspondence
+        for corr in self.correspondence.keys():
+            print(corr)
+            
+            # get a path to an image
+            files = os.listdir(im_dir)
+            for file in files:
+                if corr in file and "csv" not in file:
+                    im_path = os.path.join(im_dir,file)
+                    break
+            
+            # get point coordinates in local image space
+            im_point = self.space_to_im(point,name = corr).reshape(-1)
+            center = (int(im_point[0]),int(im_point[1]))
+            
+            if center[0] > 0 and center[0] < 1920 and center[1] > 0 and center[1] < 1080:
+            
+                im = cv2.imread(im_path)
+                im = cv2.circle(im,center,3,(0,0,255),-1)
+                im = cv2.circle(im,center,10,(0,0,255),2)
+                cv2.imshow(corr,im)
+                cv2.waitKey(0)
+                cv2.destroyAllWindows()
 
 def load_i24_csv(file):
         """
@@ -719,8 +801,11 @@ if __name__ == "__main__":
     hg.add_i24_camera(point_path,vp_path,camera_name)
     
     # fit P and evaluate
-    heights = hg.guess_heights(classes)
-    hg.scale_Z(boxes,heights,name = camera_name)
-    hg.test_transformation(boxes,classes,camera_name,frame)
+    # heights = hg.guess_heights(classes)
+    # hg.scale_Z(boxes,heights,name = camera_name)
+    # hg.test_transformation(boxes,classes,camera_name,frame)
+    del hg
     
-    
+    im_dir = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp"
+    hg = get_homographies()
+    hg.plot_test_point([800,108,0],im_dir)

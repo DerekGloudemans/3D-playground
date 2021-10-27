@@ -75,13 +75,13 @@ class MC_Crop_Tracker():
         self.f_max = params['f_max'] if 'f_max' in params else 5             
         self.cs = params['cs'] if 'cs' in params else 112                                       # size of square crops for crop detector       
         self.b = params["b"] if "b" in params else 1.25                                         # box expansion ratio for square crops (size = max object x/y size * b)
-        self.d = params['d'] if 'd' in params else 12                                            # dense detection frequency (1 is every frame, -1 is never, 2 is every 2 frames, etc)
-        self.s = params['s'] if 's' in params else 4                                           # measurement frequency (if 1, every frame, if 2, measure every 2 frames, etc)
+        self.d = params['d'] if 'd' in params else 1                                            # dense detection frequency (1 is every frame, -1 is never, 2 is every 2 frames, etc)
+        self.s = params['s'] if 's' in params else 1                                           # measurement frequency (if 1, every frame, if 2, measure every 2 frames, etc)
         self.q = params["q"] if "q" in params else 1                                            # target number of measurement queries per object per frame (assuming more than one camera is available)
         self.max_size = params['max_size'] if 'max_size' in params else torch.tensor([85,15,15])# max object size (L,W,H) in feet
         
         self.est_ts = True
-        self.ts_alpha = 0.05
+        self.ts_alpha = 0.1
         
         self.x_range = params["x_range"] if 'x_range' in params else [0,2000]                   # track objects until they exit this range of state space
         camera_centers = params["cam_centers"] if "cam_centers" in params else {
@@ -92,10 +92,10 @@ class MC_Crop_Tracker():
                                                              'p1c5': [810.0,60],
                                                              'p1c6': [980.0,60],
                                                              'p2c1': [650.0,60],
-                                                             'p2c2': [760.0,60],
-                                                             'p2c3': [870.0,60],
-                                                             'p2c4': [870.0,60],
-                                                             'p2c5': [920.0,60],
+                                                             'p2c2': [810.0,48],
+                                                             'p2c3': [890.0,24],
+                                                             'p2c4': [890.0,65],
+                                                             'p2c5': [940.0,48],
                                                              'p2c6': [980.0,60],
                                                              'p3c1': [1100.0,60],
                                                              'p3c2': [1300.0,60],
@@ -180,7 +180,7 @@ class MC_Crop_Tracker():
         self.all_confs = {}
         self.all_cameras = {}
         self.all_times = []
-    
+        self.all_ts_bias = []
     
         # superfluous features
         self.time_metrics = {            
@@ -215,6 +215,12 @@ class MC_Crop_Tracker():
         next_frames = [next(l) for l in self.loaders]
         
         frame_nums = [chunk[0] for chunk in next_frames]
+        
+        for item in frame_nums: # catch last frame of sequence
+            if item == -1:
+                self.frame_num = -1
+                return
+        
         self.frames = torch.stack([chunk[1] for chunk in next_frames])
         self.original_ims = [chunk[2] for chunk in next_frames]
         self.frame_num = frame_nums[0]
@@ -795,7 +801,7 @@ class MC_Crop_Tracker():
                     im = self.hg.plot_boxes(im,boxes,color = (0,100,150),thickness = 2)
             
             # plot time unadjusted boxes
-            if False:
+            if True:
                 _,boxes = self.filter.view(with_direction = True)
                 if len(boxes) > 0:
                     boxes = self.hg.state_to_im(boxes,name = cam_id)
@@ -818,6 +824,9 @@ class MC_Crop_Tracker():
                 dims.append((row[2:5]*10).round()/10) 
             if len(boxes) > 0:
                 boxes = torch.from_numpy(np.stack(boxes))
+                
+                if im_idx == 4:
+                    print(boxes)
                 boxes = self.hg.state_to_im(boxes,name = cam_id)
                 im = self.hg.plot_boxes(im,boxes,color = (25,200,0),thickness = tn)
             
@@ -900,7 +909,7 @@ class MC_Crop_Tracker():
             row = im_idx // n_row
             col = im_idx % n_row
             
-            cat_im[col*1080:(col+1)*1080,row*1920:(row+1)*1920,:] = original_im
+            cat_im[row*1080:(row+1)*1080,col*1920:(col+1)*1920,:] = original_im
         
         # resize to fit on standard monitor
         
@@ -1274,6 +1283,7 @@ class MC_Crop_Tracker():
                 box = post_locations[i]
                 datum =  [  id,clock_time,box[:self.state_size]   ]
                 self.all_tracks.append(datum)
+                self.all_ts_bias.append(self.ts_bias.copy())
             self.time_metrics['store'] += time.time() - start  
             
             
@@ -1370,7 +1380,8 @@ class MC_Crop_Tracker():
             "theta",
             "width",
             "length",
-            "height"
+            "height",
+            "ts_bias for cameras {}".format(self.cameras)
             ]
 
         
@@ -1442,6 +1453,8 @@ class MC_Crop_Tracker():
                         obj_line.append(state[2])
                         obj_line.append(state[4])
 
+
+                        obj_line.append(self.all_ts_bias[i])
                         out.writerow(obj_line)
                             
                             
@@ -1463,8 +1476,8 @@ if __name__ == "__main__":
     # inputs
     sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c2_0_4k.mp4",
                  "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4",
-                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",]
-                 #"/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c5_0_4k.mp4"
+                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",
+                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c5_0_4k.mp4"]
     
     # sequences = ["/home/worklab/Data/cv/video/08_06_2021/p1c2_0_4k.mp4",
     #              "/home/worklab/Data/cv/video/08_06_2021/p1c3_0_4k.mp4",
@@ -1556,7 +1569,7 @@ if __name__ == "__main__":
     if kf_param_path is not None:
         with open(kf_param_path ,"rb") as f:
             kf_params = pickle.load(f)
-            kf_params["R"] /= 10.0
+            kf_params["R"] /= 30.0
     
     else: # set up kf - we assume measurements will simply be given in state formulation x,y,l,w,h
         print("Using default KF parameters")
@@ -1616,7 +1629,7 @@ if __name__ == "__main__":
     cutoff_frame = 1000
     OUT = "track_ims"
     
-    tracker = MC_Crop_Tracker(sequences,detector,kf_params,hg,class_dict, params = params, OUT = OUT,PLOT = False,early_cutoff = cutoff_frame,cd = crop_detector)
+    tracker = MC_Crop_Tracker(sequences,detector,kf_params,hg,class_dict, params = params, OUT = OUT,PLOT = True,early_cutoff = cutoff_frame,cd = crop_detector)
     tracker.track()
     tracker.write_results_csv()
     
