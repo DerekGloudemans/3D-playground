@@ -18,6 +18,7 @@ import _pickle as pickle
 import torch
 
 import timestamp_utilities as tsu
+from homography import Homography_Wrapper, Homography
 
 class Camera_Wrapper():
     """
@@ -154,22 +155,31 @@ class Data_Reader():
                         timestamp_data[id] = datum
                     else:
                         if current_timestamp != -1:
-                            self.data.append(timestamp_data)
+                            if len(timestamp_data.keys()) > 0:
+                                self.data.append(timestamp_data)
                         timestamp_data = {}
                         current_timestamp = ts
         
     def __next__(self):
-        
-        if self.d_idx < len(self.data):
-            datum = self.data[self.d_idx]
-            ts = datum[list(datum.keys())[0]]["timestamp"]
-            if self.d_idx < len(self.data) -1:   
-                next_ts = self.data[self.d_idx+1][list(self.data[self.d_idx + 1].keys())[0]]["timestamp"]
-            else:
-                next_ts = None
+        try:
+            if self.d_idx < len(self.data):
+                datum = self.data[self.d_idx].copy()
+                ts = datum[list(datum.keys())[0]]["timestamp"]
+                if self.d_idx < len(self.data) -1:   
+                    next_ts = self.data[self.d_idx+1][list(self.data[self.d_idx + 1].keys())[0]]["timestamp"]
+                    next_datum = self.data[self.d_idx+1].copy()
+                else:
+                    next_ts = None
+                    next_datum = None
+                    
+                self.d_idx += 1
+               
+                return datum,ts,next_ts,next_datum         
             
-            self.d_idx += 1
-            return datum,ts,next_ts
+            else: return None,None,None,None
+            
+        except:
+            print(self.d_idx,self.data[self.d_idx])
             
     def plot_labels(self,im,boxes,state_boxes,classes,ids,speeds,directions,time):
         im2 = im.copy()
@@ -221,7 +231,7 @@ class Data_Reader():
             next(cap)
             cameras.append(cap)
         
-        ts_data,ts,next_ts = next(self)
+        ts_data,ts,next_ts,_ = next(self)
         
         if savefile is not None:
                 size = (3840,2160)
@@ -243,7 +253,7 @@ class Data_Reader():
                 break
             while max_time > next_ts:
                 if next_ts is not None:
-                    ts_data,ts,next_ts = next(self)
+                    ts_data,ts,next_ts,_ = next(self)
                 if next_ts is None:
                     break
             
@@ -264,7 +274,7 @@ class Data_Reader():
                 im_boxes = self.hg.state_to_im(boxes,name = camera.name)
                 
                 # plot on frame
-                camera.frame = self.hg.plot_boxes(camera.frame,im_boxes,color = (255,0,0),thickness = 2)
+                camera.frame = self.hg.plot_state_boxes(camera.frame,boxes,name = camera.name,color = (255,0,0),secondary_color = (0,255,0),thickness = 2)
                 
                 #plot label
                 classes = [ts_data[key]["class"] for key in ts_data.keys()]
@@ -312,18 +322,197 @@ class Data_Reader():
                 
             # advance one camera, rest will be advanced accordingly at beginning of loop
             next(cameras[0])
+
+    def reinterpolate(self,frequency = 30,save = False):
+        """
+        overwrites self copy of data with a regular sampling rate by interpolating object states
+        """            
+        
+        ts_data,ts,next_ts,next_ts_data = next(self)
+        output_time = ts
+        start_time = ts
+        new_data = []
+        
+        while next_ts is not None:
+            
+            new_ts_data = {}
+            
+            # for each object, interpolate position if present in both timestamps' data
+            for id in ts_data.keys():
+                if id in next_ts_data.keys():
+                    obj = ts_data[id].copy()
+                    next_obj = next_ts_data[id]
+                    
+                    # linear interpolation ratios
+                    r1 = (output_time - ts) / (next_ts - ts)
+                    r2 = 1 - r1
+                    
+                    # interpolate changing fields
+                    for item in ["x","y","l","w","h","v","timestamp"]:
+                        obj[item] = obj[item] * r1 + next_obj[item] * r2 
+                    
+                    new_ts_data[id] = obj
             
             
+            #append to data
+            new_data.append(new_ts_data)
+        
+            output_time += 1.0/frequency
+        
+            # if necessary, advance to next datum
+            while output_time > next_ts:
+                ts_data,ts,next_ts,next_ts_data = next(self)
+                if next_ts is None:
+                    break
+            if output_time < ts:
+                print("Time Error!")
+        
+        #overwrite data with new_data
+        self.data = new_data
+        self.d_idx = 0
+        
+        if save:
+            self.write_to_file(save_file = "reinterpolated_3D_tracking_outputs.csv")
             
-data_csv = "/home/worklab/Documents/derek/3D-playground/_outputs/3D_tracking_results.csv"            
+    def write_to_file(self,save_file = "default_save_file.csv"):
+        # create main data header
+        data_header = [
+            "Frame #",
+            "Timestamp",
+            "Object ID",
+            "Object class",
+            "BBox xmin",
+            "BBox ymin",
+            "BBox xmax",
+            "BBox ymax",
+            "vel_x",
+            "vel_y",
+            "Generation method",
+            "fbrx",
+            "fbry",
+            "fblx",
+            "fbly",
+            "bbrx",
+            "bbry",
+            "bblx",
+            "bbly",
+            "ftrx",
+            "ftry",
+            "ftlx",
+            "ftly",
+            "btrx",
+            "btry",
+            "btlx",
+            "btly",
+            "fbr_x",
+            "fbr_y",
+            "fbl_x",
+            "fbl_y",
+            "bbr_x",
+            "bbr_y",
+            "bbl_x",
+            "bbl_y",
+            "direction",
+            "camera",
+            "acceleration",
+            "speed",
+            "veh rear x",
+            "veh center y",
+            "theta",
+            "width",
+            "length",
+            "height",
+            "ts_bias"
+            ]
+
+        
+        
+        
+        with open(save_file, mode='w') as f:
+            out = csv.writer(f, delimiter=',')
+            
+            # write main chunk
+            out.writerow(data_header)
+            print("\n")
+            gen = "3D Detector"
+            camera = "p1c1" # default dummy value
+            
+            for i,ts_data in enumerate(self.data):
+                for id in ts_data.keys():
+                    item = ts_data[id]
+                    print("\rWriting outputs for time {} of {}".format(i,len(self.data), end = '\r', flush = True))
+                    id = item["id"]
+                    timestamp = item["timestamp"]
+                    cls = item["class"]
+                    ts_bias = item["ts_bias"]
+                    state = torch.tensor([item["x"],item["y"],item["l"],item["w"],item["h"],item["direction"],item["v"]])
+                            
+                        
+                    state = state.float()
+                    
+                    if state[0] != 0:
+                        
+                        # generate space coords
+                        space = self.hg.state_to_space(state.unsqueeze(0))
+                        space = space.squeeze(0)[:4,:2]
+                        flat_space = list(space.reshape(-1).data.numpy())
+                        
+                        # generate im coords
+                        bbox_3D = self.hg.state_to_im(state.unsqueeze(0),name = camera)
+                        flat_3D = list(bbox_3D.squeeze(0).reshape(-1).data.numpy())
+                        
+                        # generate im 2D bbox
+                        minx = torch.min(bbox_3D[:,:,0],dim = 1)[0].item()
+                        maxx = torch.max(bbox_3D[:,:,0],dim = 1)[0].item()
+                        miny = torch.min(bbox_3D[:,:,1],dim = 1)[0].item()
+                        maxy = torch.max(bbox_3D[:,:,1],dim = 1)[0].item()
+                        
+                        
+                        obj_line = []
+                        
+                        obj_line.append("-") # frame number is not useful in this data
+                        obj_line.append(timestamp)
+                        obj_line.append(id)
+                        obj_line.append(cls)
+                        obj_line.append(minx)
+                        obj_line.append(miny)
+                        obj_line.append(maxx)
+                        obj_line.append(maxy)
+                        obj_line.append(0)
+                        obj_line.append(0)
+    
+                        obj_line.append(gen)
+                        obj_line = obj_line + flat_3D + flat_space 
+                        state = state.data.numpy()
+                        obj_line.append(state[5])
+                        
+                        obj_line.append(camera)
+                        
+                        obj_line.append(0) # acceleration = 0 assumption
+                        obj_line.append(state[6])
+                        obj_line.append(state[0])
+                        obj_line.append(state[1])
+                        obj_line.append(np.pi/2.0 if state[5] == -1 else 0)
+                        obj_line.append(state[3])
+                        obj_line.append(state[2])
+                        obj_line.append(state[4])
+    
+    
+                        obj_line.append(ts_bias)
+                        out.writerow(obj_line)
+        
+            
+data_csv = "/home/worklab/Documents/derek/3D-playground/_outputs/3D_tracking_results_10_27.csv"            
 sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c2_0_4k.mp4",
             "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4",
             "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",
             "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c5_0_4k.mp4"]
 
-with open("i24_all_homography.cpkl","rb") as f:
-        hg = pickle.load(f)
-
+# with open("i24_all_homography.cpkl","rb") as f:
+#         hg = pickle.load(f)
+hg = Homography_Wrapper()
+        
         
 dr = Data_Reader(data_csv,hg)
+dr.reinterpolate(save = True)
 dr.plot_in(sequences,framerate = 10)

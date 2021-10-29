@@ -9,22 +9,38 @@ import sys, os
 import csv
 import _pickle as pickle
 
-def get_homographies(save = False):
+def get_homographies(save_file = "i24_all_homography.cpkl", directory = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform", direction = "EB"):
+    """
+    Returns a Homography object with pre-loaded correspondences
+    save - (None or str) path to save_file - if file exists, it will be opened and returned
+            otherwise, it will be written
+    directory - (None or str) path to tform points - in None, default path used
+    direction - "EB" or "WB" - specifies which transform should be preferentially loaded
+    """
+    
     try:
-        with open("i24_all_homography.cpkl","rb") as f:
+        with open(save_file,"rb") as f:
             hg = pickle.load(f)
         
     except FileNotFoundError:
         print("Regenerating i24 homgraphy...")
         
+        
         hg = Homography()
-        for camera_name in ["p1c1","p1c2","p1c3","p1c4","p1c5","p1c6","p2c1","p2c2","p2c3","p2c4","p2c5","p2c6","p3c1","p3c2","p3c3"]:
+        for camera_name in ["p1c1","p1c2","p1c3","p1c4","p1c5","p1c6","p2c1","p2c2","p2c3","p2c4","p2c5","p2c6","p3c1","p3c2","p3c3","p1c4","p1c5","p1c6"]:
             
             print("Adding camera {} to homography".format(camera_name))
             
             data_file = "/home/worklab/Data/dataset_alpha/manual_correction/rectified_{}_0_track_outputs_3D.csv".format(camera_name)
             vp_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp/{}_axes.csv".format(camera_name)
-            point_file = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform/{}_im_lmcs_transform_points.csv".format(camera_name)
+            
+            point_file = os.path.join(directory,"{}_{}_im_lmcs_transform_points.csv".format(camera_name,direction))
+            if not os.path.exists(point_file):
+                point_file = os.path.join(directory,"{}_im_lmcs_transform_points.csv".format(camera_name))
+                if not os.path.exists(point_file):
+                    other_direction = "EB" if direction == "WB" else "WB"
+                    point_file = os.path.join(directory,"{}_{}_im_lmcs_transform_points.csv".format(camera_name,other_direction))
+
 
             labels,data = load_i24_csv(data_file)
             
@@ -50,9 +66,9 @@ def get_homographies(save = False):
             heights = hg.guess_heights(classes)
             hg.scale_Z(boxes,heights,name = camera_name)
         
-        if save:
-            with open("i24_all_homography.cpkl","wb") as f:
-                pickle.dump(hg,f)
+        with open(save_file,"wb") as f:
+            pickle.dump(hg,f)
+            
     return hg
 
 
@@ -224,7 +240,7 @@ class Homography():
             for line in lines[1:-4]:
                 line = line.rstrip("\n").split(",")
                 corr_pts.append ([float(line[0]),float(line[1])])
-                space_pts.append([int(line[2]),int(line[3])])
+                space_pts.append([float(line[2]),float(line[3])])
         
         # load vps
         lines1 = []
@@ -789,7 +805,7 @@ class Homography_Wrapper():
         as for Homgraphy unless otherwise specified. Please refer to comments 
         in Homgraphy class for usage and debugging.
     """
-    def __init__(self,hg1,hg2):
+    def __init__(self,hg1 = None,hg2 = None):
         """
         hg1 - initialized Homgraphy object with all correspondences that will be 
                 used already added
@@ -797,6 +813,10 @@ class Homography_Wrapper():
         """
         self.hg1 = hg1
         self.hg2 = hg2
+        
+        if hg1 is None and hg2 is None:
+            self.hg1 = get_homographies(save_file = "EB_homography.cpkl")
+            self.hg2 = get_homographies(save_file = "WB_homography.cpkl")
         
     ## Pass-through functions 
     def guess_heights(self,classes):
@@ -818,9 +838,6 @@ class Homography_Wrapper():
         boxes[ind,:,:] = boxes2[ind,:,:]
         return boxes
     
-    def im_to_state(self,points,name = None, heights = None):
-        return self.space_to_state(self.im_to_space(points,name = name, heights = heights))
-    
     def space_to_im(self,points,name = None):
         boxes  = self.hg1.space_to_im(points,name = name)
         boxes2 = self.hg2.space_to_im(points,name = name)
@@ -829,6 +846,9 @@ class Homography_Wrapper():
         ind = torch.where(points[:,0,1] > 60)[0]
         boxes[ind,:] = boxes2[ind,:]        
         return boxes
+    
+    def im_to_state(self,points,name = None, heights = None):
+        return self.space_to_state(self.im_to_space(points,name = name, heights = heights))
 
     def state_to_im(self,points,name = None):
         return self.space_to_im(self.state_to_space(points),name = name)
@@ -838,15 +858,20 @@ class Homography_Wrapper():
         im - cv2 image
         boxes - [d,s] boxes in state formulation
         """
+        
+        if secondary_color is None:
+            secondary_color = color
+            
         # plot objects that are best fit by hg2
         ind = torch.where(boxes[:,1] > 60)[0] 
         
         labels1 = None
         if labels is not None:
             labels1 = [labels[i] for i in ind]
-            
-        im_boxes1 = self.state_to_im(boxes[ind,:],name = name)
-        im = self.hg2.plot_boxes(im,im_boxes1,color = color,labels = labels1,thickness = thickness)
+        boxes1 = boxes[ind,:]
+        if len(boxes1) > 0:
+            im_boxes1 = self.state_to_im(boxes1,name = name)
+            im = self.hg2.plot_boxes(im,im_boxes1,color = secondary_color,labels = labels1,thickness = thickness)
         
         # plot objects that are best fit by hg1
         ind = torch.where(boxes[:,1] < 60)[0]
@@ -854,21 +879,22 @@ class Homography_Wrapper():
         if labels is not None:
             labels2 = [labels[i] for i in ind]
             
-        if secondary_color is None:
-            secondary_color = color
-            
-        im_boxes2 = self.state_to_im(boxes[ind,:],name = name)
-        im = self.hg1.plot_boxes(im,im_boxes2,color = secondary_color,labels = labels2,thickness = thickness)
+
+        boxes2 = boxes[ind,:]
+        if len(boxes2) > 0:
+            im_boxes2 = self.state_to_im(boxes2,name = name)
+            im = self.hg1.plot_boxes(im,im_boxes2,color = color,labels = labels2,thickness = thickness)
 
         return im
-        
+    
+    
         
         
 
 # basic test code
 if __name__ == "__main__":
     
-    camera_name = "p1c2"
+    camera_name = "p2c4"
     
     vp_path = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp/{}_axes.csv".format(camera_name)
     point_path = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform/{}_im_lmcs_transform_points.csv".format(camera_name)
@@ -904,16 +930,25 @@ if __name__ == "__main__":
     # hg.test_transformation(boxes,classes,camera_name,frame)
     del hg
     
+    # plot test points
     im_dir = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp"
     hg = get_homographies()
     # hg.plot_test_point([800,108,0],im_dir)
     
-    hgw = Homography_Wrapper(hg,hg)
-    test_boxes1 = hgw.im_to_state(boxes,name = camera_name, heights = hgw.guess_heights(classes))
-    test_boxes = hgw.state_to_im(test_boxes1,name = camera_name)
-    test_boxes = hgw.im_to_state(test_boxes,name = camera_name, heights = hgw.guess_heights(classes))
+    # test Homography Wrapper
+    directory = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform2"
+    hg1 = get_homographies(save_file = "EB_homography.cpkl",directory = directory,direction = "EB")
+    hg2 = get_homographies(save_file = "WB_homography.cpkl",directory = directory,direction = "WB")
+    
+    hgw = Homography_Wrapper()
+    
+    frame = hg1.plot_boxes(frame,boxes,color = (0,0,255))
+    test_boxes = hgw.im_to_state(boxes,name = camera_name, heights = hgw.guess_heights(classes))
     frame = hgw.plot_state_boxes(frame,test_boxes,color = (255,0,0),secondary_color = (0,255,0), name = camera_name)
-    frame = hgw.plot_state_boxes(frame,test_boxes1,color = (0,0,255), name = camera_name)
     cv2.imshow("frame",frame)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
+    
+    
+    
+    
