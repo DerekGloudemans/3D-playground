@@ -40,8 +40,12 @@ class Camera_Wrapper():
 
     
     def __next__(self):
+        last_ts = self.ts
         ret,self.frame = self.cap.read()
         self.ts = tsu.parse_frame_timestamp(frame_pixels = self.frame, timestamp_geometry = self.geom, precomputed_checksums = self.checksums)[0]
+        
+        if self.ts is None:
+            self.ts = last_ts + 1/30.0
         
         if self.ds == 2:
             self.frame = cv2.resize(self.frame,(1920,1080))
@@ -130,7 +134,7 @@ class Data_Reader():
                         vel     = float(row[38])
                         id      =   int(float(row[2]))
                         cls     =       row[3]
-                        ts      = float(row[1])
+                        ts      = np.round(float(row[1]),4)
                         
                         if metric:
                             y = y * 3.281
@@ -163,6 +167,7 @@ class Data_Reader():
                         "v":vel,
                         "ts_bias":offsets
                         }
+                    
                     
                     if ts in data.keys():
                         data[ts][id] = datum
@@ -372,9 +377,10 @@ class Data_Reader():
                     r2 = 1 - r1
                     
                     # interpolate changing fields
-                    for item in ["x","y","l","w","h","v","timestamp"]:
+                    for item in ["x","y","l","w","h","v"]:
                         obj[item] = obj[item] * r1 + next_obj[item] * r2 
                     
+                    obj["timestamp"] = output_time
                     new_ts_data[id] = obj
             
             
@@ -527,21 +533,22 @@ class Data_Reader():
                         obj_line.append(ts_bias)
                         out.writerow(obj_line)
         
+if __name__ == "__main__":
+           
+    data_csv = "/home/worklab/Documents/derek/3D-playground/_outputs/3D_tracking_results_10_27.csv"    
+    #data_csv = "/home/worklab/Documents/derek/3D-playground/reinterpolated_3D_tracking_outputs.csv"        
+    #data_csv = "/home/worklab/Downloads/MC_rectified (1).csv"
+    
+    sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c2_0_4k.mp4",
+                "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4",
+                "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",
+                "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c5_0_4k.mp4"]
+    
+    # with open("i24_all_homography.cpkl","rb") as f:
+    #         hg = pickle.load(f)
+    hg = Homography_Wrapper()
             
-data_csv = "/home/worklab/Documents/derek/3D-playground/_outputs/3D_tracking_results_10_27.csv"    
-data_csv = "/home/worklab/Documents/derek/3D-playground/reinterpolated_3D_tracking_outputs.csv"        
-data_csv = "/home/worklab/Downloads/MC_rectified (1).csv"
-
-sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c2_0_4k.mp4",
-            "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4",
-            "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",
-            "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c5_0_4k.mp4"]
-
-# with open("i24_all_homography.cpkl","rb") as f:
-#         hg = pickle.load(f)
-hg = Homography_Wrapper()
-        
-        
-dr = Data_Reader(data_csv,hg, metric = True)
-#dr.reinterpolate(save = "reinterpolated_outputs.csv")
-dr.plot_in(sequences,framerate = 10)
+            
+    dr = Data_Reader(data_csv,hg, metric = True)
+    dr.reinterpolate(save = None)
+    dr.plot_in(sequences,framerate = 10)
