@@ -114,7 +114,7 @@ class Data_Reader():
                     if len(row) > 0 and row[0] == "Frame #":
                         HEADERS = False
                         camera_names = row[45]
-                        cameras = re.findall("(p\dc\d)",camera_names)
+                        self.cameras = re.findall("(p\dc\d)",camera_names)
                     continue
         
                 else:
@@ -132,9 +132,9 @@ class Data_Reader():
                     
                     camera_offsets = row[45]
                     camera_offsets = camera_offsets.strip("[").strip("]").split(",")
-                    offsets = [float(item) for item in camera_offsets]
                     
-                    offsets = dict([(cameras[i],offsets[i]) for i in range(len(offsets))])
+                    offsets = [float(item) for item in camera_offsets]
+                    offsets = dict([(self.cameras[i],offsets[i]) for i in range(len(offsets))])
                     
                     
                     datum = {
@@ -323,7 +323,7 @@ class Data_Reader():
             # advance one camera, rest will be advanced accordingly at beginning of loop
             next(cameras[0])
 
-    def reinterpolate(self,frequency = 30,save = False):
+    def reinterpolate(self,frequency = 30,save = "reinterpolated_3D_tracking_outputs.csv"):
         """
         overwrites self copy of data with a regular sampling rate by interpolating object states
         """            
@@ -371,7 +371,7 @@ class Data_Reader():
         self.data = new_data
         self.d_idx = 0
         
-        if save:
+        if save is not None:
             self.write_to_file(save_file = "reinterpolated_3D_tracking_outputs.csv")
             
     def write_to_file(self,save_file = "default_save_file.csv"):
@@ -422,7 +422,7 @@ class Data_Reader():
             "width",
             "length",
             "height",
-            "ts_bias"
+            "ts_bias for cameras {}".format(self.cameras)
             ]
 
         
@@ -438,13 +438,15 @@ class Data_Reader():
             camera = "p1c1" # default dummy value
             
             for i,ts_data in enumerate(self.data):
+                print("\rWriting outputs for time {} of {}".format(i,len(self.data), end = '\r', flush = True))
+
                 for id in ts_data.keys():
                     item = ts_data[id]
-                    print("\rWriting outputs for time {} of {}".format(i,len(self.data), end = '\r', flush = True))
                     id = item["id"]
                     timestamp = item["timestamp"]
                     cls = item["class"]
                     ts_bias = item["ts_bias"]
+                    ts_bias = [ts_bias[key] for key in ts_bias.keys()]
                     state = torch.tensor([item["x"],item["y"],item["l"],item["w"],item["h"],item["direction"],item["v"]])
                             
                         
@@ -502,7 +504,9 @@ class Data_Reader():
                         out.writerow(obj_line)
         
             
-data_csv = "/home/worklab/Documents/derek/3D-playground/_outputs/3D_tracking_results_10_27.csv"            
+data_csv = "/home/worklab/Documents/derek/3D-playground/_outputs/3D_tracking_results_10_27.csv"    
+data_csv = "/home/worklab/Documents/derek/3D-playground/reinterpolated_3D_tracking_outputs.csv"        
+
 sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c2_0_4k.mp4",
             "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4",
             "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",
