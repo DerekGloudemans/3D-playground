@@ -23,7 +23,7 @@ import timestamp_utilities as tsu
 
 class FrameLoader():
     
-    def __init__(self,track_directory,device, det_step, init_frames, buffer_size = 9,downsample = 1):
+    def __init__(self,track_directory,device, det_step, init_frames, buffer_size = 5,downsample = 1):
         
         """
         Parameters

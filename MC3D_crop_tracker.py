@@ -1456,8 +1456,8 @@ if __name__ == "__main__":
     # inputs
     sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p2c2_0_4k.mp4",
                  "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p2c3_0_4k.mp4",
-                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p2c4_0_4k.mp4",
-                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p2c5_0_4k.mp4"]
+                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p2c4_0_4k.mp4"]
+#                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p2c5_0_4k.mp4"]
     
     # sequences = ["/home/worklab/Data/cv/video/08_06_2021/p1c2_0_4k.mp4",
     #              "/home/worklab/Data/cv/video/08_06_2021/p1c3_0_4k.mp4",

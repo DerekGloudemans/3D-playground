@@ -52,7 +52,7 @@ class Camera_Wrapper():
 
 class Data_Reader():
     
-    def __init__(self,data_csv,homography):
+    def __init__(self,data_csv,homography,metric = False):
         """
         data_csv - a data file adhering to the data template on https://github.com/DerekGloudemans/manual-track-labeler
         homgraphy - a Homography object with correspondences for all cameras for
@@ -103,6 +103,7 @@ class Data_Reader():
         # data structure - list of dicts of dicts, indexed first by unique timestamp, then unique object
         self.data = []
         
+        data = {}
         current_timestamp = -1
         timestamp_data = {}
         with open(data_csv,"r") as f:
@@ -118,25 +119,37 @@ class Data_Reader():
                     continue
         
                 else:
-                    x       = float(row[39])
-                    y       = float(row[40]) 
-                    #theta   = float(row[41])
-                    w       = float(row[42])   
-                    l       = float(row[43])   
-                    h       = float(row[44])
-                    direc   =   int(float(row[35]))
-                    vel     = float(row[38])
-                    id      =   int(row[2])
-                    cls     =       row[3]
-                    ts      = float(row[1])
-                    
-                    camera_offsets = row[45]
-                    camera_offsets = camera_offsets.strip("[").strip("]").split(",")
-                    
-                    offsets = [float(item) for item in camera_offsets]
-                    offsets = dict([(self.cameras[i],offsets[i]) for i in range(len(offsets))])
-                    
-                    
+                    try:
+                        x       = float(row[39])
+                        y       = float(row[40]) 
+                        #theta   = float(row[41])
+                        w       = float(row[42])   
+                        l       = float(row[43])   
+                        h       = float(row[44])
+                        direc   =   int(float(row[35]))
+                        vel     = float(row[38])
+                        id      =   int(float(row[2]))
+                        cls     =       row[3]
+                        ts      = float(row[1])
+                        
+                        if metric:
+                            y = y * 3.281
+                            x = x * 3.281
+                            w = w * 3.281
+                            l = l * 3.281
+                            h = h * 3.281
+                            vel = vel * 3.281
+                        
+                        camera_offsets = row[45]
+                        camera_offsets = camera_offsets.strip("[").strip("]").split(",")
+                        
+                        offsets = [float(item) for item in camera_offsets]
+                        offsets = dict([(self.cameras[i],offsets[i]) for i in range(len(offsets))])
+                        
+                    except:
+                        continue
+
+                        
                     datum = {
                         "timestamp":ts,
                         "id":id,
@@ -151,14 +164,25 @@ class Data_Reader():
                         "ts_bias":offsets
                         }
                     
-                    if ts == current_timestamp:
-                        timestamp_data[id] = datum
+                    if ts in data.keys():
+                        data[ts][id] = datum
                     else:
-                        if current_timestamp != -1:
-                            if len(timestamp_data.keys()) > 0:
-                                self.data.append(timestamp_data)
-                        timestamp_data = {}
-                        current_timestamp = ts
+                        data[ts] = {id:datum}
+                    
+                    # if ts == current_timestamp:
+                    #     timestamp_data[id] = datum
+                    # else:
+                    #     if current_timestamp != -1:
+                    #         if len(timestamp_data.keys()) > 0:
+                    #             data[ts] =
+                    #     timestamp_data = {}
+                    #     current_timestamp = ts
+                        
+        # now, data is a dictionary keyed by timestamps. We want it to be a list, so sort keys
+        data_keys = list(data.keys())
+        data_keys.sort()
+        
+        self.data = [data[key] for key in data_keys]
         
     def __next__(self):
         try:
@@ -506,6 +530,7 @@ class Data_Reader():
             
 data_csv = "/home/worklab/Documents/derek/3D-playground/_outputs/3D_tracking_results_10_27.csv"    
 data_csv = "/home/worklab/Documents/derek/3D-playground/reinterpolated_3D_tracking_outputs.csv"        
+data_csv = "/home/worklab/Downloads/MC_rectified (1).csv"
 
 sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c2_0_4k.mp4",
             "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4",
@@ -517,6 +542,6 @@ sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4
 hg = Homography_Wrapper()
         
         
-dr = Data_Reader(data_csv,hg)
-dr.reinterpolate(save = True)
+dr = Data_Reader(data_csv,hg, metric = True)
+#dr.reinterpolate(save = "reinterpolated_outputs.csv")
 dr.plot_in(sequences,framerate = 10)
