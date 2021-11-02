@@ -117,7 +117,7 @@ class Annotator():
             while camera.ts < self.current_ts - 1/60.0:
                 next(camera)
         
-        frames = [cam.frame for cam in self.cameras]
+        frames = [[cam.frame,cam.ts] for cam in self.cameras]
         
         self.buffer.append(frames)
         if len(self.buffer) > self.buffer_lim:
@@ -162,7 +162,7 @@ class Annotator():
         for i in range(self.active_cam, self.active_cam+2):
            camera = self.cameras[i]
            
-           frame = self.buffer[self.buffer_frame_idx][i].copy()
+           frame,frame_ts = self.buffer[self.buffer_frame_idx][i].copy()
            
            # get frame objects
            # stack objects as tensor and aggregate other data for label
@@ -171,7 +171,7 @@ class Annotator():
            cam_ts_bias =  self.ts_bias[i] # TODO!!!
            
            # predict object positions assuming constant velocity
-           dt = camera.ts + cam_ts_bias - self.current_ts
+           dt = frame_ts + cam_ts_bias - self.current_ts # shouldn't be camera timestamp, should be frame timestamp
            boxes[:,0] += boxes[:,6] * dt * boxes[:,5] 
             
            # convert into image space
@@ -312,10 +312,14 @@ class Annotator():
         if self.copied_box is None:
             obj_idx = self.find_box(point)
             state_point = self.box_to_state(point)[0]
-            base_box = self.data[self.frame_idx][obj_idx].copy()
+            
+            for box in self.data[self.frame_idx]:
+                if box["id"] == obj_idx:
+                    base_box = box.copy()
+                    break
             
             # save the copied box
-            self.copied_box = (obj_idx,base_box.copy(),(state_point[0],state_point[1]))
+            self.copied_box = (obj_idx,base_box,[state_point[0],state_point[1]].copy())
             
             print("Copied template object for id {}".format(obj_idx))
         
@@ -323,12 +327,13 @@ class Annotator():
             state_point = self.box_to_state(point)[0]
             
             obj_idx = self.copied_box[0]
-            new_obj = self.copied_box[1].copy()
+            new_obj = copy.deepcopy(self.copied_box[1])
             
             dx = state_point[0] - self.copied_box[2][0] 
             dy = state_point[1] - self.copied_box[2][1] 
             new_obj["x"] += dx
             new_obj["y"] += dy
+            new_obj["timestamp"] = self.current_ts
             
             del_idx = -1
             for o_idx,obj in enumerate(self.data[self.frame_idx]):
@@ -339,6 +344,53 @@ class Annotator():
                 del self.data[self.frame_idx][del_idx]
                 
             self.data[self.frame_idx].append(new_obj)
+            
+            
+    def interpolate(self,obj_idx):
+        prev_idx = -1
+        prev_box = None
+        for f_idx in range(0,len(self.data)):
+            frame_data = self.data[f_idx]
+                
+            # get  obj_idx box for this frame if there is one
+            cur_box = None
+            for obj in frame_data:
+                if obj["id"] == obj_idx:
+                    cur_box = copy.deepcopy(obj)
+                    break
+                
+            if prev_box is not None and cur_box is not None:
+                
+                vel =  ((cur_box["x"] - prev_box["x"])*cur_box["direction"] / (cur_box["timestamp"] - prev_box["timestamp"])).item()
+                
+                for inter_idx in range(prev_idx + 1, f_idx):   # for each frame between:
+                    p1 = float(f_idx - inter_idx) / float(f_idx - prev_idx)
+                    p2 = 1.0 - p1
+                    
+                    
+                    
+                    new_obj = {
+                        "x": p1 * prev_box["x"] + p2 * cur_box["x"],
+                        "y": p1 * prev_box["y"] + p2 * cur_box["y"],
+                        "l": prev_box["l"],
+                        "w": prev_box["w"],
+                        "h": prev_box["h"],
+                        "direction": prev_box["direction"],
+                        "v": vel,
+                        "id": obj_idx,
+                        "class": prev_box["class"]
+                        }
+                    
+                    self.data[inter_idx].append(new_obj)
+            
+            # lastly, update prev_frame
+            if cur_box is not None:
+                prev_idx = f_idx 
+                prev_box = copy.deepcopy(cur_box)
+
+                    
+                    
+            
     
     def delete(self,obj_idx, n_frames = -1):
         """
@@ -483,37 +535,8 @@ class Annotator():
                 # copy and paste a box across frames
                 elif self.active_command == "COPY PASTE":
                     self.copy_paste( self.new)
-                                
-   
-                
                     
-                elif self.active_command == "REDRAW":
-                    obj_idx = self.find_box(self.new)
-                    #self.new *= 2
-                    self.redraw(obj_idx,self.new)
-                    
-                elif self.active_command == "MOVE":
-                    obj_idx = self.find_box(self.new)
-                    #self.new *= 2
-                    self.move(obj_idx,self.new)
-                
-                elif self.active_command == "REALIGN":
-                    obj_idx = self.find_box(self.new)
-                    #self.new *= 2
-                    self.realign(obj_idx,self.frame_num)
-                    
-                elif self.active_command == "KEYFRAME":
-                    if self.keyframe_point is None:
-                        obj_idx = self.find_box(self.new)
-                    else:
-                        obj_idx = self.keyframe_point[0]
-                    #self.new *= 2
-                    self.keyframe(obj_idx,self.new)
-                    
-                elif self.active_command == "GUESS FROM 2D":
-                    obj_idx = self.find_box(self.new)
-                    self.guess_from_2D(obj_idx)  
-        
+                # interpolate between copy-pasted frames
                 elif self.active_command == "INTERPOLATE":
                     obj_idx = self.find_box(self.new)
                     self.interpolate(obj_idx)  
@@ -534,9 +557,9 @@ class Annotator():
            
            key = cv2.waitKey(1)
            
-           if key == ord('='):
+           if key == ord('9'):
                 self.next()
-           elif key == ord('-'):
+           elif key == ord('8'):
                 self.prev()  
            elif key == ord("q"):
                self.quit()
@@ -559,6 +582,8 @@ class Annotator():
                self.active_command = "DIMENSION"
            elif key == ord("c"):
                self.active_command = "COPY PASTE"
+           elif key == ord("i"):
+               self.active_command = "INTERPOLATE"
 
         
     
