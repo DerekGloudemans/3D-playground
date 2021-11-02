@@ -92,7 +92,9 @@ class Annotator():
         self.clicked = False
         self.plot()
         
-        self.active_command = "DELETE"
+        self.active_command = "DIMENSION"
+        self.right_click = False
+        self.copied_box = None
 
     def toggle_cams(self,dir):
         """dir should be -1 or 1"""
@@ -237,6 +239,7 @@ class Annotator():
         point - indexable data type with 4 values (start x/y, end x/y)
         state_point - 2x2 tensor of start and end point in space
         """
+        point = point.copy()
         #transform point into state space
         if point[0] > 1920:
             cam = self.seq_keys[self.active_cam+1]
@@ -274,8 +277,69 @@ class Annotator():
             for item in self.data[frame]:
                 if item["id"] == obj_idx:
                     item["y"] += dy
-                    
-
+    
+    def dimension(self,obj_idx,box):
+        """
+        Adjust relevant dimension in all frames based on input box. Relevant dimension
+        is selected based on:
+            1. if self.right_click, height is adjusted - in this case, a set ratio
+               of pixels to height is used because there is inherent uncertainty 
+               in pixels to height conversion
+            2. otherwise, object is adjusted in the principle direction of displacement vector
+        """
+        
+        state_box = self.box_to_state(box)
+        dx = state_box[1,0] - state_box[0,0]
+        dy = state_box[1,1] - state_box[0,1]
+        dh = -(box[3] - box[1]) * 0.02 # we say that 50 pixels in y direction = 1 foot of change
+              
+        if self.right_click:
+            relevant_change = dh
+            relevant_key = "h"
+        elif np.abs(dx) > np.abs(dy): 
+            relevant_change = dx
+            relevant_key = "l"
+        else:
+            relevant_change = dy
+            relevant_key = "w"
+        
+        for frame in range(0,len(self.data)):
+            for item in self.data[frame]:
+                if item["id"] == obj_idx:
+                    item[relevant_key] += relevant_change
+   
+    def copy_paste(self,point):     
+        if self.copied_box is None:
+            obj_idx = self.find_box(point)
+            state_point = self.box_to_state(point)[0]
+            base_box = self.data[self.frame_idx][obj_idx].copy()
+            
+            # save the copied box
+            self.copied_box = (obj_idx,base_box.copy(),(state_point[0],state_point[1]))
+            
+            print("Copied template object for id {}".format(obj_idx))
+        
+        else: # paste the copied box
+            state_point = self.box_to_state(point)[0]
+            
+            obj_idx = self.copied_box[0]
+            new_obj = self.copied_box[1].copy()
+            
+            dx = state_point[0] - self.copied_box[2][0] 
+            dy = state_point[1] - self.copied_box[2][1] 
+            new_obj["x"] += dx
+            new_obj["y"] += dy
+            
+            del_idx = -1
+            for o_idx,obj in enumerate(self.data[self.frame_idx]):
+                if obj["id"] == obj_idx:
+                    del_idx = o_idx
+                    break
+            if del_idx != -1:
+                del self.data[self.frame_idx][del_idx]
+                
+            self.data[self.frame_idx].append(new_obj)
+    
     def delete(self,obj_idx, n_frames = -1):
         """
         Delete object obj_idx in this and n_frames -1 subsequent frames. If n_frames 
@@ -317,19 +381,16 @@ class Annotator():
     def on_mouse(self,event, x, y, flags, params):
        if event == cv.EVENT_LBUTTONDOWN and not self.clicked:
          self.start_point = (x,y)
-         self.clicked = True
-         self.changed = True
-         
+         self.clicked = True 
        elif event == cv.EVENT_LBUTTONUP:
             box = np.array([self.start_point[0],self.start_point[1],x,y])
             self.new = box
             self.clicked = False
-              
-       # elif event == cv.EVENT_RBUTTONDOWN:
-       #      obj_idx = self.find_box((x,y))
-       #      self.realign(obj_idx, self.frame_num)
-       #      self.plot()  
-    
+        
+       # some commands have right-click-specific toggling
+       elif event == cv.EVENT_RBUTTONDOWN:
+            self.right_click = not self.right_click
+            self.copied_box = None
     
     def find_box(self,point):
         point = point.copy()
@@ -383,7 +444,9 @@ class Annotator():
         cv.setMouseCallback("window", self.on_mouse, 0)
            
         while(self.cont): # one frame
-           # handle click actions
+            
+           ### handle click actions
+           
            if self.new is not None:
                
                 # Add and delete objects
@@ -412,6 +475,16 @@ class Annotator():
                     obj_idx = self.find_box(self.new)
                     self.shift_y(obj_idx,self.new)    
                 
+                # Adjust object dimensions
+                elif self.active_command == "DIMENSION":
+                    obj_idx = self.find_box(self.new)
+                    self.dimension(obj_idx,self.new)
+                   
+                # copy and paste a box across frames
+                elif self.active_command == "COPY PASTE":
+                    self.copy_paste( self.new)
+                                
+   
                 
                     
                 elif self.active_command == "REDRAW":
@@ -449,11 +522,15 @@ class Annotator():
                 self.plot()
                 self.new = None     
            
-               
+           ### Show frame
+                
            #self.cur_frame = cv2.resize(self.cur_frame,(1920,1080))
            cv2.imshow("window", self.plot_frame)
-           title = "{}     Frame {}/{} {}, Cameras {} and {}".format(self.active_command,self.frame_idx,len(self.data),self.current_ts,self.seq_keys[self.active_cam],self.seq_keys[self.active_cam + 1])
+           title = "{} {}     Frame {}/{} {}, Cameras {} and {}".format("R" if self.right_click else "",self.active_command,self.frame_idx,len(self.data),self.current_ts,self.seq_keys[self.active_cam],self.seq_keys[self.active_cam + 1])
            cv2.setWindowTitle("window",str(title))
+           
+           
+           ### Handle keystrokes 
            
            key = cv2.waitKey(1)
            
@@ -472,13 +549,17 @@ class Annotator():
            # toggle commands
            elif key == ord("a"):
                self.active_command = "ADD"
-           elif key == ord("d"):
+           elif key == ord("r"):
                self.active_command = "DELETE"
            elif key == ord("x"):
                self.active_command = "SHIFT X"
            elif key == ord("y"):
                self.active_command = "SHIFT Y" 
-           
+           elif key == ord("d"):
+               self.active_command = "DIMENSION"
+           elif key == ord("c"):
+               self.active_command = "COPY PASTE"
+
         
     
     
