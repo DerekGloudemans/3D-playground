@@ -56,7 +56,8 @@ class Annotator():
             new_item = [item[id] for id in item.keys()]
             data.append(new_item)
         self.data = data
-        
+        self.start_time = self.data[0][0]["timestamp"]
+
         
         # get sequences
         self.sequences = {}
@@ -102,6 +103,7 @@ class Annotator():
         
         self.label_buffer = copy.deepcopy(self.data)
 
+
     def toggle_cams(self,dir):
         """dir should be -1 or 1"""
         
@@ -116,6 +118,9 @@ class Annotator():
         """
         
         ts = self.data[idx][0]["timestamp"]
+        
+        #ts = self.start_time + idx
+        
         return ts
     
     def advance_cameras_to_current_ts(self):
