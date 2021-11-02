@@ -61,7 +61,7 @@ class Annotator():
         # get sequences
         self.sequences = {}
         for sequence in os.listdir(sequence_directory):    
-            if "_0" in sequence: # TODO - fix
+            if "_0" in sequence and "p1" in sequence: # TODO - fix
                 cap = Camera_Wrapper(os.path.join(sequence_directory,sequence))
                 self.sequences[cap.name] = cap
         
@@ -72,7 +72,11 @@ class Annotator():
         # sorted sequence list
         self.seq_keys = list(self.sequences.keys())
         self.seq_keys.sort()
-        self.ts_bias = np.zeros(len(self.seq_keys))
+        
+        try:
+            self.ts_bias = np.array([self.data[0][0]["ts_bias"][key] for key in self.seq_keys])
+        except:
+            self.ts_bias = np.zeros(len(self.seq_keys))
         
         self.cameras = [self.sequences[key] for key in self.seq_keys]
         [next(camera) for camera in self.cameras]
@@ -95,6 +99,8 @@ class Annotator():
         self.active_command = "DIMENSION"
         self.right_click = False
         self.copied_box = None
+        
+        self.label_buffer = copy.deepcopy(self.data)
 
     def toggle_cams(self,dir):
         """dir should be -1 or 1"""
@@ -162,7 +168,8 @@ class Annotator():
         for i in range(self.active_cam, self.active_cam+2):
            camera = self.cameras[i]
            
-           frame,frame_ts = self.buffer[self.buffer_frame_idx][i].copy()
+           frame,frame_ts = self.buffer[self.buffer_frame_idx][i]
+           frame = frame.copy()
            
            # get frame objects
            # stack objects as tensor and aggregate other data for label
@@ -278,6 +285,12 @@ class Annotator():
                 if item["id"] == obj_idx:
                     item["y"] += dy
     
+    def change_class(self,obj_idx,cls):
+         for frame in range(0,len(self.data)):
+            for item in self.data[frame]:
+                if item["id"] == obj_idx:
+                    item["class"] = cls
+    
     def dimension(self,obj_idx,box):
         """
         Adjust relevant dimension in all frames based on input box. Relevant dimension
@@ -389,7 +402,21 @@ class Annotator():
                 prev_box = copy.deepcopy(cur_box)
 
                     
-                    
+    def correct_time_bias(self,box):
+        
+        # get relevant camera idx
+        
+        if box[0] > 1920:
+            camera_idx = self.active_cam + 1
+        else:
+            camera_idx = self.active_cam
+            
+        # get dy in image space
+        dy = box[3] - box[1]
+        
+        # 5 pixels = 0.001
+        self.ts_bias[camera_idx] += dy* 0.0002
+        
             
     
     def delete(self,obj_idx, n_frames = -1):
@@ -443,6 +470,9 @@ class Annotator():
        elif event == cv.EVENT_RBUTTONDOWN:
             self.right_click = not self.right_click
             self.copied_box = None
+            
+       elif event == cv.EVENT_MOUSEWHEEL:
+            print(x,y,flags)
     
     def find_box(self,point):
         point = point.copy()
@@ -487,6 +517,144 @@ class Annotator():
         for cam in self.cameras:
             cam.release()
             
+        self.save()
+    
+    def undo(self):
+        if self.label_buffer is not None:
+            self.data = self.label_buffer
+            self.label_buffer = None
+            self.plot()
+        else:
+            print("Can't undo")
+    
+    def save(self):
+        outfile = "working_3D_tracking_data.csv"
+        
+        data_header = [
+            "Frame #",
+            "Timestamp",
+            "Object ID",
+            "Object class",
+            "BBox xmin",
+            "BBox ymin",
+            "BBox xmax",
+            "BBox ymax",
+            "vel_x",
+            "vel_y",
+            "Generation method",
+            "fbrx",
+            "fbry",
+            "fblx",
+            "fbly",
+            "bbrx",
+            "bbry",
+            "bblx",
+            "bbly",
+            "ftrx",
+            "ftry",
+            "ftlx",
+            "ftly",
+            "btrx",
+            "btry",
+            "btlx",
+            "btly",
+            "fbr_x",
+            "fbr_y",
+            "fbl_x",
+            "fbl_y",
+            "bbr_x",
+            "bbr_y",
+            "bbl_x",
+            "bbl_y",
+            "direction",
+            "camera",
+            "acceleration",
+            "speed",
+            "veh rear x",
+            "veh center y",
+            "theta",
+            "width",
+            "length",
+            "height",
+            "ts_bias for cameras {}".format(self.seq_keys)
+            ]
+
+        
+        
+        
+        with open(outfile, mode='w') as f:
+            out = csv.writer(f, delimiter=',')
+            
+            # write main chunk
+            out.writerow(data_header)
+            #print("\n")
+            gen = "3D Detector"
+            camera = "p1c1" # default dummy value
+            
+            for i,ts_data in enumerate(self.data):
+                print("\rWriting outputs for time {} of {}".format(i,len(self.data)), end = '\r', flush = True)
+
+                for item in ts_data:
+                    id = item["id"]
+                    timestamp = item["timestamp"]
+                    cls = item["class"]
+                    ts_bias = [t for t in self.ts_bias]
+                    state = torch.tensor([item["x"],item["y"],item["l"],item["w"],item["h"],item["direction"],item["v"]])
+                            
+                        
+                    state = state.float()
+                    
+                    if state[0] != 0:
+                        
+                        # generate space coords
+                        space = self.hg.state_to_space(state.unsqueeze(0))
+                        space = space.squeeze(0)[:4,:2]
+                        flat_space = list(space.reshape(-1).data.numpy())
+                        
+                        # generate im coords
+                        bbox_3D = self.hg.state_to_im(state.unsqueeze(0),name = camera)
+                        flat_3D = list(bbox_3D.squeeze(0).reshape(-1).data.numpy())
+                        
+                        # generate im 2D bbox
+                        minx = torch.min(bbox_3D[:,:,0],dim = 1)[0].item()
+                        maxx = torch.max(bbox_3D[:,:,0],dim = 1)[0].item()
+                        miny = torch.min(bbox_3D[:,:,1],dim = 1)[0].item()
+                        maxy = torch.max(bbox_3D[:,:,1],dim = 1)[0].item()
+                        
+                        
+                        obj_line = []
+                        
+                        obj_line.append("-") # frame number is not useful in this data
+                        obj_line.append(timestamp)
+                        obj_line.append(id)
+                        obj_line.append(cls)
+                        obj_line.append(minx)
+                        obj_line.append(miny)
+                        obj_line.append(maxx)
+                        obj_line.append(maxy)
+                        obj_line.append(0)
+                        obj_line.append(0)
+    
+                        obj_line.append(gen)
+                        obj_line = obj_line + flat_3D + flat_space 
+                        state = state.data.numpy()
+                        obj_line.append(state[5])
+                        
+                        obj_line.append(camera)
+                        
+                        obj_line.append(0) # acceleration = 0 assumption
+                        obj_line.append(state[6])
+                        obj_line.append(state[0])
+                        obj_line.append(state[1])
+                        obj_line.append(np.pi/2.0 if state[5] == -1 else 0)
+                        obj_line.append(state[3])
+                        obj_line.append(state[2])
+                        obj_line.append(state[4])
+    
+    
+                        obj_line.append(ts_bias)
+                        out.writerow(obj_line)
+            
     def run(self):
         """
         Main processing loop
@@ -500,7 +668,9 @@ class Annotator():
            ### handle click actions
            
            if self.new is not None:
-               
+               # buffer one change
+                self.label_buffer = copy.deepcopy(self.data)
+                
                 # Add and delete objects
                 if self.active_command == "DELETE":
                     obj_idx = self.find_box(self.new)
@@ -541,9 +711,21 @@ class Annotator():
                     obj_idx = self.find_box(self.new)
                     self.interpolate(obj_idx)  
                  
+                elif self.active_command == "VEHICLE CLASS":
+                    obj_idx = self.find_box(self.new)
+                    try:
+                        cls = (self.keyboard_input())  
+                    except:
+                        cls = "midsize"
+                    self.change_class(obj_idx,cls)
+
+                elif self.active_command == "TIME BIAS":
+                    self.correct_time_bias(self.new)
                     
                 self.plot()
-                self.new = None     
+                self.new = None   
+                
+
            
            ### Show frame
                 
@@ -568,6 +750,9 @@ class Annotator():
                self.toggle_cams(-1)
            elif key == ord("]"):
                self.toggle_cams(1)
+               
+           elif key == ord("u"):
+               self.undo()
           
            # toggle commands
            elif key == ord("a"):
@@ -584,12 +769,16 @@ class Annotator():
                self.active_command = "COPY PASTE"
            elif key == ord("i"):
                self.active_command = "INTERPOLATE"
-
+           elif key == ord("v"):
+               self.active_command = "VEHICLE CLASS"
+           elif key == ord("t"):
+               self.active_command = "TIME BIAS"
         
     
     
 if __name__ == "__main__":
     directory = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k"
     data = "/home/worklab/Documents/derek/3D-playground/_outputs/3D_tracking_results_10_27.csv"
+    data = "/home/worklab/Documents/derek/3D-playground/working_3D_tracking_data.csv"
     ann = Annotator(data,directory)
     ann.run()
