@@ -331,6 +331,7 @@ class Data_Reader():
             
             # view frame and if necessary write to file
             cat_im /= 255.0
+            #cat_im = cv2.resize(cat_im,(cat_im.shape[1]//2,cat_im.shape[0]//2))
             cv2.imshow("frame",cat_im)
             cv2.setWindowTitle("frame","At time{}".format(cam_ts))
             key = cv2.waitKey(1)
@@ -549,6 +550,6 @@ if __name__ == "__main__":
     hg = Homography_Wrapper()
             
             
-    dr = Data_Reader(data_csv,hg, metric = True)
+    dr = Data_Reader(data_csv,hg, metric = False)
     dr.reinterpolate(save = None)
     dr.plot_in(sequences,framerate = 10)

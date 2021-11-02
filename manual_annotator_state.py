@@ -7,6 +7,7 @@ import argparse
 import string
 import cv2 as cv
 import re
+import torch
 
 from homography import Homography,Homography_Wrapper
 from datareader import Data_Reader, Camera_Wrapper
@@ -50,6 +51,13 @@ class Annotator():
         self.data = dr.data.copy()
         del dr
        
+        data = []
+        for item in self.data:
+            new_item = [item[id] for id in item.keys()]
+            data.append(new_item)
+        self.data = data
+        
+        
         # get sequences
         self.sequences = {}
         for sequence in os.listdir(sequence_directory):    
@@ -64,6 +72,8 @@ class Annotator():
         # sorted sequence list
         self.seq_keys = list(self.sequences.keys())
         self.seq_keys.sort()
+        self.ts_bias = np.zeros(len(self.seq_keys))
+        
         self.cameras = [self.sequences[key] for key in self.seq_keys]
         [next(camera) for camera in self.cameras]
         self.active_cam = 0
@@ -79,7 +89,10 @@ class Annotator():
 
         self.cont = True
         self.new = None
+        self.clicked = False
         self.plot()
+        
+        self.active_command = "DELETE"
 
     def toggle_cams(self,dir):
         """dir should be -1 or 1"""
@@ -88,15 +101,13 @@ class Annotator():
             self.active_cam += dir
             self.plot()
         
-        
     
     def data_ts(self,idx):
         """
         Get the timestamp for idx of self.data
         """
         
-        key = list(self.data[idx].keys())[0]
-        ts = self.data[idx][key]["timestamp"]
+        ts = self.data[idx][0]["timestamp"]
         return ts
     
     def advance_cameras_to_current_ts(self):
@@ -128,7 +139,6 @@ class Annotator():
                 
             self.plot()
             
-            print([cam.ts for cam in self.cameras])
         else:
             print("On last frame")
     
@@ -152,8 +162,31 @@ class Annotator():
            
            frame = self.buffer[self.buffer_frame_idx][i].copy()
            
-           # plot boxes
+           # get frame objects
+           # stack objects as tensor and aggregate other data for label
+           ts_data = self.data[self.frame_idx]
+           boxes = torch.stack([torch.tensor([obj["x"],obj["y"],obj["l"],obj["w"],obj["h"],obj["direction"],obj["v"]]) for obj in ts_data])
+           cam_ts_bias =  self.ts_bias[i] # TODO!!!
+           
+           # predict object positions assuming constant velocity
+           dt = camera.ts + cam_ts_bias - self.current_ts
+           boxes[:,0] += boxes[:,6] * dt * boxes[:,5] 
+            
+           # convert into image space
+           im_boxes = self.hg.state_to_im(boxes,name = camera.name)
+            
+           # plot on frame
+           frame = self.hg.plot_state_boxes(frame,boxes,name = camera.name,color = (255,0,0),secondary_color = (0,255,0),thickness = 2)
 
+           
+           # plot labels
+           classes = [item["class"] for item in ts_data]
+           ids = [item["id"] for item in ts_data]
+           speeds = [round(item["v"] * 3600/5280 * 10)/10 for item in ts_data]  # in mph
+           directions = [item["direction"] for item in ts_data]
+           directions = ["WB" if item == -1 else "EB" for item in directions]
+           camera.frame = Data_Reader.plot_labels(None,frame,im_boxes,boxes,classes,ids,speeds,directions,self.current_ts+dt)
+           
            
            plot_frames.append(frame)
        
@@ -173,7 +206,114 @@ class Annotator():
         # view frame and if necessary write to file
         cat_im /= 255.0
         self.plot_frame = cat_im
-           
+
+    def add(self,obj_idx,location):
+        
+        xy = self.box_to_state(location)[0,:]
+        
+        # create new object
+        obj = {
+            "x": xy[0],
+            "y": xy[1],
+            "l": self.hg.hg1.class_dims["midsize"][0],
+            "w": self.hg.hg1.class_dims["midsize"][1],
+            "h": self.hg.hg1.class_dims["midsize"][2],
+            "direction": 1 if xy[1] < 60 else -1,
+            "v": 100,
+            "class":"midsize",
+            "timestamp": self.current_ts,
+            "id": obj_idx
+            }
+        
+        self.data[self.frame_idx].append(obj)
+        
+        print("Added obj {} at ({})".format(obj_idx,xy))
+        print(obj)
+    
+    def box_to_state(self,point):
+        """
+        Input box is a 2D rectangle in image space. Returns the corresponding 
+        start and end locations in space
+        point - indexable data type with 4 values (start x/y, end x/y)
+        state_point - 2x2 tensor of start and end point in space
+        """
+        #transform point into state space
+        if point[0] > 1920:
+            cam = self.seq_keys[self.active_cam+1]
+            point[0] -= 1920
+            point[2] -= 1920
+        else:
+            cam = self.seq_keys[self.active_cam]
+
+        point1 = torch.tensor([point[0],point[1]]).unsqueeze(0).unsqueeze(0).repeat(1,8,1)
+        point2 = torch.tensor([point[2],point[3]]).unsqueeze(0).unsqueeze(0).repeat(1,8,1)
+        point = torch.cat((point1,point2),dim = 0)
+        
+        state_point = self.hg.im_to_state(point,name = cam, heights = torch.tensor([0]))[:,:2]
+        
+        return state_point
+        
+    def shift_x(self,obj_idx,box):
+        state_box = self.box_to_state(box)
+        
+        dx = state_box[1,0] - state_box[0,0]
+        
+        # shift obj_idx in this and all subsequent frames
+        for frame in range(self.frame_idx,len(self.data)):
+            for item in self.data[frame]:
+                if item["id"] == obj_idx:
+                    item["x"] += dx
+                    
+    def shift_y(self,obj_idx,box):
+        state_box = self.box_to_state(box)
+        
+        dy = state_box[1,1] - state_box[0,1]
+        
+        # shift obj_idx in this and all subsequent frames
+        for frame in range(self.frame_idx,len(self.data)):
+            for item in self.data[frame]:
+                if item["id"] == obj_idx:
+                    item["y"] += dy
+                    
+
+    def delete(self,obj_idx, n_frames = -1):
+        """
+        Delete object obj_idx in this and n_frames -1 subsequent frames. If n_frames 
+        = -1, deletes obj_idx in all subsequent frames
+        """
+        frame_idx = self.frame_idx
+        
+        stop_idx = frame_idx + n_frames 
+        if n_frames == -1:
+            stop_idx = len(self.data)
+        
+        while frame_idx < stop_idx:
+            try:
+                for idx,obj in enumerate(self.data[frame_idx]):
+                    if obj["id"] == obj_idx:
+                        del self.data[frame_idx][idx]
+                        break
+            except KeyError:
+                pass
+            frame_idx += 1
+        
+        print("Deleted obj {} in frame {} and all subsequent frames".format(obj_idx,self.frame_idx))    
+   
+    def get_unused_id(self):
+        all_ids = []
+        for frame_data in self.data:
+            for datum in frame_data:
+                all_ids.append(datum["id"])
+                
+        all_ids = list(set(all_ids))
+        
+        new_id = 0
+        while True:
+            if new_id in all_ids:
+                new_id += 1
+            else:
+                return new_id
+        
     def on_mouse(self,event, x, y, flags, params):
        if event == cv.EVENT_LBUTTONDOWN and not self.clicked:
          self.start_point = (x,y)
@@ -185,11 +325,55 @@ class Annotator():
             self.new = box
             self.clicked = False
               
-       elif event == cv.EVENT_RBUTTONDOWN:
-            obj_idx = self.find_box((x,y))
-            self.realign(obj_idx, self.frame_num)
-            self.plot()  
+       # elif event == cv.EVENT_RBUTTONDOWN:
+       #      obj_idx = self.find_box((x,y))
+       #      self.realign(obj_idx, self.frame_num)
+       #      self.plot()  
     
+    
+    def find_box(self,point):
+        point = point.copy()
+        
+        #transform point into state space
+        if point[0] > 1920:
+            cam = self.seq_keys[self.active_cam+1]
+            point[0] -= 1920
+        else:
+            cam = self.seq_keys[self.active_cam]
+
+        point = torch.tensor([point[0],point[1]]).unsqueeze(0).unsqueeze(0).repeat(1,8,1)
+        state_point = self.hg.im_to_state(point,name = cam, heights = torch.tensor([0])).squeeze(0)
+        
+        min_dist = np.inf
+        min_id = None
+        
+        for box in self.data[self.frame_idx]:
+            
+            dist = (box["x"] - state_point[0] )**2 + (box["y"] - state_point[1])**2
+            if dist < min_dist:
+                min_dist = dist
+                min_id = box["id"]  
+        
+        return min_id
+
+    def keyboard_input(self):
+        keys = ""
+        letters = string.ascii_lowercase + string.digits
+        while True:
+            key = cv2.waitKey(1)
+            for letter in letters:
+                if key == ord(letter):
+                    keys = keys + letter
+            if key == ord("\n") or key == ord("\r"):
+                break
+        return keys    
+      
+    def quit(self):      
+        self.cont = False
+        cv2.destroyAllWindows()
+        for cam in self.cameras:
+            cam.release()
+            
     def run(self):
         """
         Main processing loop
@@ -199,40 +383,36 @@ class Annotator():
         cv.setMouseCallback("window", self.on_mouse, 0)
            
         while(self.cont): # one frame
-        
            # handle click actions
            if self.new is not None:
                
+                # Add and delete objects
                 if self.active_command == "DELETE":
                     obj_idx = self.find_box(self.new)
                     try:
                         n_frames = int(self.keyboard_input())
                     except:
-                        n_frames = -1
-                        
+                        n_frames = -1    
                     self.delete(obj_idx,n_frames = n_frames)
                     
                 elif self.active_command == "ADD":
                     # get obj_idx
                     try:
-                        obj_idx = int(self.keyboard_input())
-                        self.last_active_obj_idx = obj_idx
+                        obj_idx = int(self.keyboard_input())  
                     except:
-                        obj_idx = self.last_active_obj_idx
-                    
-                    
-                    #self.new *= 2
+                        obj_idx = self.get_unused_id()
                     self.add(obj_idx,self.new)
                 
-                elif self.active_command == "REASSIGN":
-                    old_obj_idx = self.find_box(self.new)
+                # Shift object
+                elif self.active_command == "SHIFT X":
+                    obj_idx = self.find_box(self.new)
+                    self.shift_x(obj_idx,self.new)
                     
-                    try:
-                        obj_idx = int(self.keyboard_input())
-                        self.last_active_obj_idx = obj_idx
-                    except:
-                        obj_idx = self.last_active_obj_idx
-                    self.reassign(old_obj_idx,obj_idx)
+                elif self.active_command == "SHIFT Y":
+                    obj_idx = self.find_box(self.new)
+                    self.shift_y(obj_idx,self.new)    
+                
+                
                     
                 elif self.active_command == "REDRAW":
                     obj_idx = self.find_box(self.new)
@@ -264,10 +444,7 @@ class Annotator():
                 elif self.active_command == "INTERPOLATE":
                     obj_idx = self.find_box(self.new)
                     self.interpolate(obj_idx)  
-                  
-                self.label_buffer.append([self.frame_num,copy.deepcopy(self.labels[self.frame_num])])
-                if len(self.label_buffer) > 50:
-                    self.label_buffer = self.label_buffer[1:]
+                 
                     
                 self.plot()
                 self.new = None     
@@ -275,22 +452,32 @@ class Annotator():
                
            #self.cur_frame = cv2.resize(self.cur_frame,(1920,1080))
            cv2.imshow("window", self.plot_frame)
-           title = "Frame {}/{} {}, Cameras {} and {}".format(self.frame_idx,len(self.data),self.current_ts,self.seq_keys[self.active_cam],self.seq_keys[self.active_cam + 1])
+           title = "{}     Frame {}/{} {}, Cameras {} and {}".format(self.active_command,self.frame_idx,len(self.data),self.current_ts,self.seq_keys[self.active_cam],self.seq_keys[self.active_cam + 1])
            cv2.setWindowTitle("window",str(title))
            
            key = cv2.waitKey(1)
            
-           if key == ord('9'):
+           if key == ord('='):
                 self.next()
-           elif key == ord('8'):
+           elif key == ord('-'):
                 self.prev()  
-                
-           elif key == ord("5"):
+           elif key == ord("q"):
+               self.quit()
+               
+           elif key == ord("["):
                self.toggle_cams(-1)
-           elif key == ord("6"):
+           elif key == ord("]"):
                self.toggle_cams(1)
-              
-            
+          
+           # toggle commands
+           elif key == ord("a"):
+               self.active_command = "ADD"
+           elif key == ord("d"):
+               self.active_command = "DELETE"
+           elif key == ord("x"):
+               self.active_command = "SHIFT X"
+           elif key == ord("y"):
+               self.active_command = "SHIFT Y" 
            
         
     
