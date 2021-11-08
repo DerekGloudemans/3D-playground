@@ -8,9 +8,12 @@ import string
 import cv2 as cv
 import re
 import torch
+import matplotlib.pyplot as plt
 
 from homography import Homography,Homography_Wrapper
 from datareader import Data_Reader, Camera_Wrapper
+
+from scipy.signal import savgol_filter
 
 
 
@@ -43,11 +46,12 @@ class Annotator():
     """
     
     
-    def __init__(self,data,sequence_directory):
+    def __init__(self,data,sequence_directory,overwrite = False):
         
         # get data
         dr = Data_Reader(data,None,metric = False)
-        dr.reinterpolate(frequency = 30, save = None)
+        if overwrite:
+            dr.reinterpolate(frequency = 30, save = None)
         self.data = dr.data.copy()
         del dr
        
@@ -58,11 +62,13 @@ class Annotator():
         self.data = data
         self.start_time = self.data[0][0]["timestamp"]
 
+        if overwrite:
+            self.clear_data()
         
         # get sequences
         self.sequences = {}
         for sequence in os.listdir(sequence_directory):    
-            if "_0" in sequence and "p1" in sequence: # TODO - fix
+            if "_0" in sequence and ("p1" in sequence or "p2" in sequence): # TODO - fix
                 cap = Camera_Wrapper(os.path.join(sequence_directory,sequence))
                 self.sequences[cap.name] = cap
         
@@ -78,6 +84,9 @@ class Annotator():
             self.ts_bias = np.array([self.data[0][0]["ts_bias"][key] for key in self.seq_keys])
         except:
             self.ts_bias = np.zeros(len(self.seq_keys))
+            for k_idx,key in enumerate(self.seq_keys):
+                if key in self.data[0][0]["ts_bias"].keys():
+                    self.ts_bias[k_idx] = self.data[0][0]["ts_bias"][key]
         
         self.cameras = [self.sequences[key] for key in self.seq_keys]
         [next(camera) for camera in self.cameras]
@@ -85,7 +94,7 @@ class Annotator():
 
         # get first frames from each camera according to first frame of data
         self.buffer_frame_idx = -1
-        self.buffer_lim = 100
+        self.buffer_lim = 500
         self.buffer = []
         
         self.frame_idx = 0
@@ -103,7 +112,31 @@ class Annotator():
         
         self.label_buffer = copy.deepcopy(self.data)
 
-
+    
+    def clear_data(self):
+        """
+        For each timestep, a dummy object is added to store the time, and 
+        all other objects are removed.
+        """
+        
+        for f_idx in range(len(self.data)):
+            try:
+                obj = self.data[f_idx][0].copy()
+                obj["x"] = -100
+                obj["y"] = -100
+                obj["l"] = 0
+                obj["w"] = 0
+                obj["h"] = 0
+                obj["direction"] = 0
+                obj["v"] = 0
+                obj["id"] = -1
+                obj["class"] = None
+            except:
+                obj["timestamp"] += 1/30.0
+            
+            self.data[f_idx] = [obj]
+        
+    
     def toggle_cams(self,dir):
         """dir should be -1 or 1"""
         
@@ -179,7 +212,7 @@ class Annotator():
            # get frame objects
            # stack objects as tensor and aggregate other data for label
            ts_data = self.data[self.frame_idx]
-           boxes = torch.stack([torch.tensor([obj["x"],obj["y"],obj["l"],obj["w"],obj["h"],obj["direction"],obj["v"]]) for obj in ts_data])
+           boxes = torch.stack([torch.tensor([obj["x"],obj["y"],obj["l"],obj["w"],obj["h"],obj["direction"],obj["v"]]).float() for obj in ts_data])
            cam_ts_bias =  self.ts_bias[i] # TODO!!!
            
            # predict object positions assuming constant velocity
@@ -242,7 +275,6 @@ class Annotator():
         self.data[self.frame_idx].append(obj)
         
         print("Added obj {} at ({})".format(obj_idx,xy))
-        print(obj)
     
     def box_to_state(self,point):
         """
@@ -268,27 +300,25 @@ class Annotator():
         
         return state_point
         
-    def shift_x(self,obj_idx,box):
+    def shift(self,obj_idx,box):
         state_box = self.box_to_state(box)
         
         dx = state_box[1,0] - state_box[0,0]
-        
-        # shift obj_idx in this and all subsequent frames
-        for frame in range(self.frame_idx,len(self.data)):
-            for item in self.data[frame]:
-                if item["id"] == obj_idx:
-                    item["x"] += dx
-                    
-    def shift_y(self,obj_idx,box):
-        state_box = self.box_to_state(box)
-        
         dy = state_box[1,1] - state_box[0,1]
         
-        # shift obj_idx in this and all subsequent frames
-        for frame in range(self.frame_idx,len(self.data)):
-            for item in self.data[frame]:
-                if item["id"] == obj_idx:
-                    item["y"] += dy
+        if np.abs(dy) > np.abs(dx): # shift y if greater magnitude of change
+            # shift y for obj_idx in this and all subsequent frames
+            for frame in range(self.frame_idx,len(self.data)):
+                for item in self.data[frame]:
+                    if item["id"] == obj_idx:
+                        item["y"] += dy
+        else:
+            # shift x for obj_idx in this and all subsequent frames
+            for frame in range(self.frame_idx,len(self.data)):
+                for item in self.data[frame]:
+                    if item["id"] == obj_idx:
+                        item["x"] += dx
+        
     
     def change_class(self,obj_idx,cls):
          for frame in range(0,len(self.data)):
@@ -362,9 +392,18 @@ class Annotator():
                 del self.data[self.frame_idx][del_idx]
                 
             self.data[self.frame_idx].append(new_obj)
-            
+       
+    def print_all(self,obj_idx):
+        for f_idx in range(0,len(self.data)):
+            frame_data = self.data[f_idx]
+            for obj in frame_data:
+                if obj["id"] == obj_idx:
+                    print(obj)
             
     def interpolate(self,obj_idx):
+        
+        #self.print_all(obj_idx)
+        
         prev_idx = -1
         prev_box = None
         for f_idx in range(0,len(self.data)):
@@ -374,19 +413,21 @@ class Annotator():
             cur_box = None
             for obj in frame_data:
                 if obj["id"] == obj_idx:
+                    del cur_box
                     cur_box = copy.deepcopy(obj)
+                    
+                    if prev_box is not None:
+                        vel =  ((cur_box["x"] - prev_box["x"])*cur_box["direction"] / (cur_box["timestamp"] - prev_box["timestamp"])).item()
+                        obj["v"] = vel
+                    
                     break
                 
             if prev_box is not None and cur_box is not None:
                 
-                vel =  ((cur_box["x"] - prev_box["x"])*cur_box["direction"] / (cur_box["timestamp"] - prev_box["timestamp"])).item()
                 
                 for inter_idx in range(prev_idx + 1, f_idx):   # for each frame between:
                     p1 = float(f_idx - inter_idx) / float(f_idx - prev_idx)
-                    p2 = 1.0 - p1
-                    
-                    
-                    
+                    p2 = 1.0 - p1                    
                     new_obj = {
                         "x": p1 * prev_box["x"] + p2 * cur_box["x"],
                         "y": p1 * prev_box["y"] + p2 * cur_box["y"],
@@ -396,7 +437,8 @@ class Annotator():
                         "direction": prev_box["direction"],
                         "v": vel,
                         "id": obj_idx,
-                        "class": prev_box["class"]
+                        "class": prev_box["class"],
+                        "timestamp": self.data[inter_idx][0]["timestamp"]
                         }
                     
                     self.data[inter_idx].append(new_obj)
@@ -404,7 +446,12 @@ class Annotator():
             # lastly, update prev_frame
             if cur_box is not None:
                 prev_idx = f_idx 
+                del prev_box
                 prev_box = copy.deepcopy(cur_box)
+        
+        self.plot_all_trajectories()
+        
+        #self.print_all(obj_idx)
 
                     
     def correct_time_bias(self,box):
@@ -476,8 +523,8 @@ class Annotator():
             self.right_click = not self.right_click
             self.copied_box = None
             
-       elif event == cv.EVENT_MOUSEWHEEL:
-            print(x,y,flags)
+       # elif event == cv.EVENT_MOUSEWHEEL:
+       #      print(x,y,flags)
     
     def find_box(self,point):
         point = point.copy()
@@ -531,6 +578,129 @@ class Annotator():
             self.plot()
         else:
             print("Can't undo")
+    
+    def analyze_trajectory(self,obj_idx):
+        """
+        Create position and velocity timeseries and plot
+        """
+        x = []
+        y = []
+        v = []
+        time = []
+        
+        for frame in range(0,len(self.data)):
+            for item in self.data[frame]:
+                if item["id"] == obj_idx:
+                    x.append(item["x"])
+                    y.append(item["y"])
+                    v.append(item["v"])
+                    time.append(item["timestamp"])
+                    
+        time = [item - min(time) for item in time]
+        
+        fig, axs = plt.subplots(3,sharex = True,figsize = (12,8))
+        axs[0].plot(time,x,color = (0,0,1))
+        axs[1].plot(time,v,color = (0,1,0))
+        axs[2].plot(time,y,color = (1,0,0))
+        
+        axs[2].set(xlabel='time(s)', ylabel='Y-pos (ft)')
+        axs[1].set(ylabel='Velocity (ft/s)')
+        axs[0].set(ylabel='X-pos (ft)')
+
+        x_smooth = savgol_filter(x, 45, 1)
+        axs[0].plot(time,x_smooth,color = (0,0,0.2))
+        
+        v2 = [(x_smooth[i] - x_smooth[i-1]) / (time[i] - time[i-1]) for i in range(1,len(x_smooth))]
+        axs[1].plot(time[:-1],v2,color = (0,0.7,0.3))
+        
+        v3 = savgol_filter(v,45,1)
+        axs[1].plot(time,v3,color = (0,0.3,0.7))
+        axs[1].legend(["v from unsmoothed x","v from smoothed x","directly smoothed v"])
+        
+        y_smooth = savgol_filter(y,45,1)
+        axs[2].plot(time,y_smooth,color = (0.8,0.2,0))
+        
+        plt.show()  
+        #self.smooth_trajectory(obj_idx)
+       
+    def plot_all_trajectories(self):
+        all_x = []
+        all_y = []
+        all_v = []
+        all_time = []
+        for obj_idx in range(self.get_unused_id()):
+            x = []
+            y = []
+            v = []
+            time = []
+            
+            for frame in range(0,len(self.data)):
+                for item in self.data[frame]:
+                    if item["id"] == obj_idx:
+                        x.append(item["x"])
+                        y.append(item["y"])
+                        v.append(item["v"])
+                        time.append(item["timestamp"])
+                        
+            time = [item - min(time) for item in time]
+            
+            all_time.append(time)
+            all_v.append(v)
+            all_x.append(x)
+            all_y.append(y)
+        
+        fig, axs = plt.subplots(3,sharex = True,figsize = (12,8))
+        colors = np.random.rand(1000,3)
+        
+        for i in range(len(all_v)):
+            axs[0].plot(all_time[i],all_x[i],color = colors[i])
+            axs[1].plot(all_time[i],all_v[i],color = colors[i])
+            axs[2].plot(all_time[i],all_y[i],color = colors[i])
+            
+            axs[2].set(xlabel='time(s)', ylabel='Y-pos (ft)')
+            axs[1].set(ylabel='Velocity (ft/s)')
+            axs[0].set(ylabel='X-pos (ft)')
+
+       
+        
+        plt.show()  
+        #self.smooth_trajectory(obj_idx)
+    def smooth_trajectory(self,obj_idx):
+        """
+        Applies hamming smoother to velocity and position data
+        """
+        
+        x = []
+        y = []
+        v = []
+        time = []
+        
+        for frame in range(0,len(self.data)):
+            for item in self.data[frame]:
+                if item["id"] == obj_idx:
+                    x.append(item["x"])
+                    y.append(item["y"])
+                    v.append(item["v"])
+                    time.append(item["timestamp"])
+                    
+        time = [item - min(time) for item in time]
+        
+       
+
+        x_smooth = savgol_filter(x, 45, 1)
+        v_smooth = [(x_smooth[i] - x_smooth[i-1]) / (time[i] - time[i-1]) for i in range(1,len(x_smooth))]
+        v_smooth = [v_smooth[0]] + v_smooth
+        y_smooth = savgol_filter(y,45,1)
+        
+        idx = 0
+        for frame in range(0,len(self.data)):
+            for item in self.data[frame]:
+                if item["id"] == obj_idx:
+                    item["x"] = x_smooth[idx] 
+                    item["y"] = y_smooth[idx]
+                    item["v"] = v_smooth[idx]
+                    idx+= 1
+        
     
     def save(self):
         outfile = "working_3D_tracking_data.csv"
@@ -694,13 +864,9 @@ class Annotator():
                     self.add(obj_idx,self.new)
                 
                 # Shift object
-                elif self.active_command == "SHIFT X":
+                elif self.active_command == "SHIFT":
                     obj_idx = self.find_box(self.new)
-                    self.shift_x(obj_idx,self.new)
-                    
-                elif self.active_command == "SHIFT Y":
-                    obj_idx = self.find_box(self.new)
-                    self.shift_y(obj_idx,self.new)    
+                    self.shift(obj_idx,self.new)
                 
                 # Adjust object dimensions
                 elif self.active_command == "DIMENSION":
@@ -726,6 +892,10 @@ class Annotator():
 
                 elif self.active_command == "TIME BIAS":
                     self.correct_time_bias(self.new)
+                elif self.active_command == "ANALYZE":
+                    obj_idx = self.find_box(self.new)
+                    self.analyze_trajectory(obj_idx)
+
                     
                 self.plot()
                 self.new = None   
@@ -758,16 +928,18 @@ class Annotator():
                
            elif key == ord("u"):
                self.undo()
+           elif key == ord("-"):
+               self.frame_frequency(-1)
+           elif key == ord("+"):
+               self.frame_frequency(1)
           
            # toggle commands
            elif key == ord("a"):
                self.active_command = "ADD"
            elif key == ord("r"):
                self.active_command = "DELETE"
-           elif key == ord("x"):
-               self.active_command = "SHIFT X"
-           elif key == ord("y"):
-               self.active_command = "SHIFT Y" 
+           elif key == ord("s"):
+               self.active_command = "SHIFT"
            elif key == ord("d"):
                self.active_command = "DIMENSION"
            elif key == ord("c"):
@@ -778,12 +950,20 @@ class Annotator():
                self.active_command = "VEHICLE CLASS"
            elif key == ord("t"):
                self.active_command = "TIME BIAS"
+           elif key == ord("`"):
+               self.active_command = "ANALYZE"
         
     
     
 if __name__ == "__main__":
+    overwrite = False
+    
     directory = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k"
-    data = "/home/worklab/Documents/derek/3D-playground/_outputs/3D_tracking_results_10_27.csv"
-    data = "/home/worklab/Documents/derek/3D-playground/working_3D_tracking_data.csv"
-    ann = Annotator(data,directory)
+    if overwrite:
+        data = "/home/worklab/Documents/derek/3D-playground/_outputs/3D_tracking_results_10_27.csv"
+        data = "/home/worklab/Documents/derek/3D-playground/_outputs/3D_tracking_results.csv"
+    else:
+        data = "/home/worklab/Documents/derek/3D-playground/working_3D_tracking_data.csv"
+    ann = Annotator(data,directory,overwrite = overwrite)
     ann.run()
+    #ann.hg.hg1.plot_test_point([736,12,0],"/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp")

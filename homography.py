@@ -685,7 +685,9 @@ class Homography():
                      [0,0,0,0]] #bbr
         
         for idx, bbox_3d in enumerate(boxes):
-                
+            
+            # TODO - check whether box mostly falls within frame
+            
             for a in range(len(bbox_3d)):
                 ab = bbox_3d[a]
                 for b in range(a,len(bbox_3d)):

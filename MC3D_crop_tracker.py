@@ -75,7 +75,7 @@ class MC_Crop_Tracker():
         self.f_max = params['f_max'] if 'f_max' in params else 5             
         self.cs = params['cs'] if 'cs' in params else 112                                       # size of square crops for crop detector       
         self.b = params["b"] if "b" in params else 1.25                                         # box expansion ratio for square crops (size = max object x/y size * b)
-        self.d = params['d'] if 'd' in params else 5                                            # dense detection frequency (1 is every frame, -1 is never, 2 is every 2 frames, etc)
+        self.d = params['d'] if 'd' in params else 1                                            # dense detection frequency (1 is every frame, -1 is never, 2 is every 2 frames, etc)
         self.s = params['s'] if 's' in params else 1                                           # measurement frequency (if 1, every frame, if 2, measure every 2 frames, etc)
         self.q = params["q"] if "q" in params else 1                                            # target number of measurement queries per object per frame (assuming more than one camera is available)
         self.max_size = params['max_size'] if 'max_size' in params else torch.tensor([85,15,15])# max object size (L,W,H) in feet
@@ -190,6 +190,7 @@ class MC_Crop_Tracker():
         self.timestamps = [0 for i in self.loaders]
         
         self.ts_bias = [0 for i in self.loaders]
+        #self.ts_bias = [0.0506,0.0604,0.035,0.028]
         
         print("Initialized MC Crop Tracker for {} sequences".format(len(self.cameras)))
         
@@ -819,6 +820,20 @@ class MC_Crop_Tracker():
                     cam_detections = torch.stack(cam_detections)
                     im = self.hg.plot_state_boxes(im,cam_detections,name = cam_id,thickness = 1, color = (0,0,255))
             
+            # Bypass = False
+            # if 26 in ids:
+            #     idx = ids.index(26)
+                
+            #     im_boxes = self.hg.state_to_im(boxes,name = cam_id)
+            #     im_box = im_boxes[idx]
+            #     minx = torch.min(im_box[:,0])
+            #     miny = torch.min(im_box[:,1])
+            #     maxx = torch.max(im_box[:,0])
+            #     maxy = torch.max(im_box[:,1])
+                
+            #     crops = torch.tensor([minx-20,miny-20,maxx+20,maxy+20]).unsqueeze(0)
+            #     Bypass = True
+            
             if crops is not None and fancy_crop:
                 # make a weighted im with 0.5 x intensity outside of crops
                 crops = crops.int()
@@ -828,7 +843,7 @@ class MC_Crop_Tracker():
                     if camera_idxs[idx] == im_idx:
                         
                         im2[crop[1]:crop[3],crop[0]:crop[2],:] = im[crop[1]:crop[3],crop[0]:crop[2],:]
-                im =  cv2.addWeighted(im,0.7,im2,0.3,0)
+                im =  cv2.addWeighted(im,0.3,im2,0.7,0)
                 
             
             # plot label
@@ -1454,10 +1469,10 @@ class MC_Crop_Tracker():
 if __name__ == "__main__":
     
     # inputs
-    sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p2c2_0_4k.mp4",
-                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p2c3_0_4k.mp4",
-                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p2c4_0_4k.mp4"]
-#                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p2c5_0_4k.mp4"]
+    sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c2_0_4k.mp4",
+                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4",
+                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",
+                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c5_0_4k.mp4"]
     
     # sequences = ["/home/worklab/Data/cv/video/08_06_2021/p1c2_0_4k.mp4",
     #              "/home/worklab/Data/cv/video/08_06_2021/p1c3_0_4k.mp4",

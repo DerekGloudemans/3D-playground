@@ -233,7 +233,7 @@ class Data_Reader():
             
             c1 = (int(minx),int(maxy)) 
             c2 = int(c1[0] + t_size[0] + 10), int(c1[1] + len(full_label)*(t_size[1] +4)) 
-            cv2.rectangle(im2, c1, c2,(1,1,1), -1)
+            cv2.rectangle(im2, c1, c2,(255,255,255), -1)
             
             offset = t_size[1] + 4
             for label in full_label:

@@ -366,9 +366,9 @@ class MOT_Evaluator():
         metrics["ID switches"] = count
         
         # Compute MOTA
-        metrics["MOTA"] = 1 - (self.m["FN"] +  metrics["ID switches"] + self.m["FP"])/(self.m["TP"])
-        metrics["MOTA edge-case"]  = 1 - (self.m["FN"] +  metrics["ID switches"] + self.m["FP"]- self.m["FP edge-case"])/(self.m["TP"])
-        metrics["MOTA @ 0.2"] = 1 - (self.m["FN @ 0.2"] +  metrics["ID switches"] + self.m["FP @ 0.2"])/(self.m["TP"])
+        metrics["MOTA"] = 1 - (self.m["FN"] +  metrics["Fragmentations"] + metrics["ID switches"] + self.m["FP"])/(self.m["TP"])
+        metrics["MOTA edge-case"]  = 1 - (self.m["FN"] +  metrics["Fragmentations"] + metrics["ID switches"] + self.m["FP"]- self.m["FP edge-case"])/(self.m["TP"])
+        metrics["MOTA @ 0.2"] = 1 - (self.m["FN @ 0.2"] +   metrics["Fragmentations"] + metrics["ID switches"] + self.m["FP @ 0.2"])/(self.m["TP"])
         
         # Compute average detection metrics in various spaces
         ious = np.array(self.m["match_IOU"])
