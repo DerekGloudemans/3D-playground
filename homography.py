@@ -27,7 +27,7 @@ def get_homographies(save_file = "i24_all_homography.cpkl", directory = "/home/w
         
         
         hg = Homography()
-        for camera_name in ["p1c1","p1c2","p1c3","p1c4","p1c5","p1c6","p2c1","p2c2","p2c3","p2c4","p2c5","p2c6","p3c1","p3c2","p3c3","p1c4","p1c5","p1c6"]:
+        for camera_name in ["p1c1","p1c2","p1c3","p1c4","p1c5","p1c6","p2c1","p2c2","p2c3","p2c4","p2c5","p2c6","p3c1","p3c2","p3c3","p3c4","p3c5"]:
             
             print("Adding camera {} to homography".format(camera_name))
             

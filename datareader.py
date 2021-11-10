@@ -135,6 +135,9 @@ class Data_Reader():
                         id      =   int(float(row[2]))
                         cls     =       row[3]
                         ts      = np.round(float(row[1]),4)
+                        camera =  row[36]
+                        if camera == "":
+                            camera = "p1c1" # default
                         
                         if metric:
                             y = y * 3.281
@@ -165,7 +168,8 @@ class Data_Reader():
                         "h":h,
                         "direction":direc,
                         "v":vel,
-                        "ts_bias":offsets
+                        "ts_bias":offsets,
+                        "camera":camera
                         }
                     
                     
@@ -210,9 +214,14 @@ class Data_Reader():
         except:
             print(self.d_idx,self.data[self.d_idx])
             
-    def plot_labels(self,im,boxes,state_boxes,classes,ids,speeds,directions,time):
+    def plot_labels(self,im,boxes,state_boxes,classes,ids,speeds,directions,times):
         im2 = im.copy()
         for i in range(len(boxes)):
+            
+            if type(times) == list:
+                time = times[i]
+            else:
+                time = times
             
             label = "{} {}:".format(classes[i],ids[i])          
             label2 = "{:.1f}mph {}".format(speeds[i],directions[i])   
@@ -477,6 +486,10 @@ class Data_Reader():
                     timestamp = item["timestamp"]
                     cls = item["class"]
                     ts_bias = item["ts_bias"]
+                    try:
+                        camera = item["camera"]
+                    except:
+                        camera = "p1c1"
                     ts_bias = [ts_bias[key] for key in ts_bias.keys()]
                     state = torch.tensor([item["x"],item["y"],item["l"],item["w"],item["h"],item["direction"],item["v"]])
                             
