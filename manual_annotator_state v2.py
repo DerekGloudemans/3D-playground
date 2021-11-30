@@ -28,9 +28,9 @@ class Annotator():
     Thus, several challenges arise in terms of how to manage out-of-phase and 
     out-of-period discretizations. The following guidelines are adhered to:
         
-    i.  We assume (and first normalize) data with constant timesteps
-    ii. We index "frames" based on these constant timesteps. At each timestep, 
-        we procure the frame frome each camera with the timestamp closest to that 
+    i.  We assume the first camera's timestamps as ground truth and base all labels off of this
+    ii. We index "frames" based on these  timesteps. At each timestep, 
+        we procure the frame frome each camera with the timestamp closest to the gt 
         timestep. We then project object into predicted positions within these frames
         based on constant velocity, also taking into account timestamp error bias
         We maintain a limited buffer so we can move backwards through frames.
@@ -50,25 +50,15 @@ class Annotator():
         
         # get data
         dr = Data_Reader(data,None,metric = False)
-        if overwrite:
-            dr.reinterpolate(frequency = 30, save = None)
         self.data = dr.data.copy()
         del dr
-       
-        data = []
-        for item in self.data:
-            new_item = [item[id] for id in item.keys()]
-            data.append(new_item)
-        self.data = data
-        self.start_time = self.data[0][0]["timestamp"]
-
-        if overwrite:
-            self.clear_data()
+        
+        
         
         # get sequences
         self.sequences = {}
         for sequence in os.listdir(sequence_directory):    
-            if "_0" in sequence:# and ("p1" in sequence or "p2" in sequence): # TODO - fix
+            if "_0" in sequence and ("p1" in sequence):# or "p2" in sequence): 
                 cap = Camera_Wrapper(os.path.join(sequence_directory,sequence))
                 self.sequences[cap.name] = cap
         
@@ -80,13 +70,17 @@ class Annotator():
         self.seq_keys = list(self.sequences.keys())
         self.seq_keys.sort()
         
+        # get ts biases
         try:
-            self.ts_bias = np.array([self.data[0][0]["ts_bias"][key] for key in self.seq_keys])
+            self.ts_bias = np.array([list(self.data[0].values())[0]["ts_bias"][key] for key in self.seq_keys])
         except:
             self.ts_bias = np.zeros(len(self.seq_keys))
             for k_idx,key in enumerate(self.seq_keys):
-                if key in self.data[0][0]["ts_bias"].keys():
-                    self.ts_bias[k_idx] = self.data[0][0]["ts_bias"][key]
+                if key in  list(self.data[0].values())[0]["ts_bias"].keys():
+                    self.ts_bias[k_idx] = list(self.data[0].values())[0]["ts_bias"][key]
+        
+        if overwrite:
+            self.clear_data()
         
         self.cameras = [self.sequences[key] for key in self.seq_keys]
         [next(camera) for camera in self.cameras]
@@ -94,8 +88,9 @@ class Annotator():
 
         # remove all data older than 1/60th second before last camera timestamp
         max_cam_time = max([cam.ts for cam in self.cameras])
-        while self.data_ts(0) + 1/60.0 < max_cam_time:
-            self.data = self.data[1:]
+        if not overwrite:
+            while list(self.data[0].values())[0]["timestamp"] + 1/60.0 < max_cam_time:
+                self.data = self.data[1:]
 
         # get first frames from each camera according to first frame of data
         self.buffer_frame_idx = -1
@@ -103,8 +98,9 @@ class Annotator():
         self.buffer = []
         
         self.frame_idx = 0
-        self.current_ts = self.data_ts(self.frame_idx)
+        self.current_ts = max_cam_time
         self.advance_cameras_to_current_ts()
+        self.current_ts = self.buffer[-1][0][1] # first camera timestamp becomes current timestamp
 
         self.cont = True
         self.new = None
@@ -118,6 +114,7 @@ class Annotator():
         
         self.label_buffer = copy.deepcopy(self.data)
 
+        self.all_ts = [self.current_ts]
     
     def clear_data(self):
         """
@@ -126,22 +123,7 @@ class Annotator():
         """
         
         for f_idx in range(len(self.data)):
-            try:
-                obj = self.data[f_idx][0].copy()
-                obj["x"] = -100
-                obj["y"] = -100
-                obj["l"] = 0
-                obj["w"] = 0
-                obj["h"] = 0
-                obj["direction"] = 0
-                obj["v"] = 0
-                obj["id"] = -1
-                obj["class"] = None
-                obj["camera"] = None
-            except:
-                obj["timestamp"] += 1/30.0
-            
-            self.data[f_idx] = [obj]
+            self.data[f_idx] = {}
         
     
     def toggle_cams(self,dir):
@@ -151,17 +133,6 @@ class Annotator():
             self.active_cam += dir
             self.plot()
         
-    
-    def data_ts(self,idx):
-        """
-        Get the timestamp for idx of self.data
-        """
-        
-        ts = self.data[idx][0]["timestamp"]
-        
-        #ts = self.start_time + idx
-        
-        return ts
     
     def advance_cameras_to_current_ts(self):
         for c_idx,camera in enumerate(self.cameras):
@@ -180,15 +151,24 @@ class Annotator():
         """        
         if self.frame_idx < len(self.data):
             self.frame_idx += 1
-            self.current_ts = self.data_ts(self.frame_idx)
+            
             
             # if we are in the buffer, move forward one frame in the buffer
             if self.buffer_frame_idx < -1:
                 self.buffer_frame_idx += 1
+                self.current_ts = self.all_ts[self.frame_idx]
                 
             # if we are at the end of the buffer, advance frames and store
             else:
+                # advance first camera
+                next(self.cameras[0])
+                self.current_ts = self.cameras[0].ts + self.ts_bias[0]
+                
+                # advnace rest of cameras
                 self.advance_cameras_to_current_ts()
+                
+                # store first camera ts as offical timestamp
+                self.all_ts.append(self.cameras[0].ts)
                 
             
         else:
@@ -197,17 +177,13 @@ class Annotator():
     def prev(self):
         if self.frame_idx > 0 and self.buffer_frame_idx > -self.buffer_lim:
             self.frame_idx -= 1
-            self.current_ts = self.data_ts(self.frame_idx)
+            self.current_ts = self.all_ts[self.frame_idx]
             
             self.buffer_frame_idx -= 1
         else:
             print("Cannot return to previous frame. First frame or buffer limit")
       
-    # def velocity_overwrite(self,obj_idx,vel):
-    #      for o_idx,obj in enumerate(self.data[self.frame_idx]):
-    #         if obj["id"] == obj_idx:
-    #             obj["v"] = vel
-    #             break
+
     
     def plot(self):
         
@@ -215,35 +191,36 @@ class Annotator():
         
         for i in range(self.active_cam, self.active_cam+2):
            camera = self.cameras[i]
-           
+           cam_ts_bias =  self.ts_bias[i] # TODO!!!
+
            frame,frame_ts = self.buffer[self.buffer_frame_idx][i]
            frame = frame.copy()
            
            # get frame objects
            # stack objects as tensor and aggregate other data for label
-           ts_data = self.data[self.frame_idx]
-           boxes = torch.stack([torch.tensor([obj["x"],obj["y"],obj["l"],obj["w"],obj["h"],obj["direction"],obj["v"]]).float() for obj in ts_data])
-           cam_ts_bias =  self.ts_bias[i] # TODO!!!
-           
-           # predict object positions assuming constant velocity
-           dt = frame_ts + cam_ts_bias - self.current_ts # shouldn't be camera timestamp, should be frame timestamp
-           boxes[:,0] += boxes[:,6] * dt * boxes[:,5] 
-            
-           # convert into image space
-           im_boxes = self.hg.state_to_im(boxes,name = camera.name)
-            
-           # plot on frame
-           frame = self.hg.plot_state_boxes(frame,boxes,name = camera.name,color = (255,0,0),secondary_color = (0,255,0),thickness = 2)
-
-           
-           # plot labels
-           times = [item["timestamp"] for item in ts_data]
-           classes = [item["class"] for item in ts_data]
-           ids = [item["id"] for item in ts_data]
-           speeds = [round(item["v"] * 3600/5280 * 10)/10 for item in ts_data]  # in mph
-           directions = [item["direction"] for item in ts_data]
-           directions = ["WB" if item == -1 else "EB" for item in directions]
-           camera.frame = Data_Reader.plot_labels(None,frame,im_boxes,boxes,classes,ids,speeds,directions,times)
+           ts_data = list(self.data[self.frame_idx].values())
+           if len(ts_data) > 0:
+               boxes = torch.stack([torch.tensor([obj["x"],obj["y"],obj["l"],obj["w"],obj["h"],obj["direction"],obj["v"]]).float() for obj in ts_data])
+               
+               # predict object positions assuming constant velocity
+               dt = frame_ts + cam_ts_bias - self.current_ts # shouldn't be camera timestamp, should be frame timestamp
+               boxes[:,0] += boxes[:,6] * dt * boxes[:,5] 
+                
+               # convert into image space
+               im_boxes = self.hg.state_to_im(boxes,name = camera.name)
+                
+               # plot on frame
+               frame = self.hg.plot_state_boxes(frame,boxes,name = camera.name,color = (255,0,0),secondary_color = (0,255,0),thickness = 2)
+    
+               
+               # plot labels
+               times = [item["timestamp"] for item in ts_data]
+               classes = [item["class"] for item in ts_data]
+               ids = [item["id"] for item in ts_data]
+               speeds = [round(item["v"] * 3600/5280 * 10)/10 for item in ts_data]  # in mph
+               directions = [item["direction"] for item in ts_data]
+               directions = ["WB" if item == -1 else "EB" for item in directions]
+               camera.frame = Data_Reader.plot_labels(None,frame,im_boxes,boxes,classes,ids,speeds,directions,times)
            
            
            # print the estimated time_error for camera relative to first sequence
@@ -289,14 +266,13 @@ class Annotator():
             "w": self.hg.hg1.class_dims["midsize"][1],
             "h": self.hg.hg1.class_dims["midsize"][2],
             "direction": 1 if xy[1] < 60 else -1,
-            "v": 0,
             "class":"midsize",
             "timestamp": self.current_ts,
             "id": obj_idx,
             "camera":self.clicked_camera
             }
         
-        self.data[self.frame_idx].append(obj)
+        self.data[self.frame_idx][obj_idx] = obj
         
         print("Added obj {} at ({})".format(obj_idx,xy))
     
@@ -324,54 +300,6 @@ class Annotator():
         
         return state_point
     
-    def recompute_velocity(self,obj_idx):    
-        """
-        Called after updating the x position of a box
-        """
-        
-        for o_idx,obj in enumerate(self.data[self.frame_idx]):
-                if obj["id"] == obj_idx:
-                    cur_camera = obj["camera"]
-                    break
-                
-        prev_x = None
-        for f_idx in range(self.frame_idx-1,-1,-1):
-            # get last previous box, if there is one
-            for po_idx,obj in enumerate(self.data[f_idx]):
-                if obj["id"] == obj_idx and obj["camera"] == cur_camera:
-                    prev_x = obj["x"]
-                    prev_time = obj["timestamp"]
-                    prev_idx = f_idx
-                    break
-            if prev_x is not None: break
-
-        if prev_x is None:
-            return
-        else:
-            for o_idx,obj in enumerate(self.data[self.frame_idx]):
-                if obj["id"] == obj_idx:
-                    dx_vel = np.inf
-                    while np.abs(dx_vel) > 1e-03:
-                        vel = (obj["x"] - prev_x) / (obj["timestamp"] - prev_time) * obj["direction"]
-                        old_vel = obj["v"]
-                        prev_old_vel = self.data[f_idx][po_idx]["v"]
-                        
-                        dx_vel = (self.cameras[self.clicked_idx].ts + self.ts_bias[self.clicked_idx] - self.data_ts(self.frame_idx)) * (vel - old_vel)
-                        dx_vel_first = (self.cameras[self.clicked_idx].ts + self.ts_bias[self.clicked_idx] - self.data_ts(self.frame_idx)) * (vel - prev_old_vel)
-                        try:
-                            vel = vel.item()
-                            dx_vel = vel.item()
-                        except:
-                            pass
-                        
-                        self.data[self.frame_idx][o_idx]["v"] = vel
-                        self.data[self.frame_idx][o_idx]["x"] -= dx_vel/2.0
-                        # overwrite previous velocity if it hasn't been set yet
-                        if True or self.data[f_idx][po_idx]["v"] == 0:
-                            self.data[f_idx][po_idx]["v"] = vel  
-                            self.data[f_idx][po_idx]["x"] -= dx_vel_first/2.0
-
-                    break
         
     def shift(self,obj_idx,box):
         state_box = self.box_to_state(box)
@@ -382,26 +310,24 @@ class Annotator():
         if np.abs(dy) > np.abs(dx): # shift y if greater magnitude of change
             # shift y for obj_idx in this and all subsequent frames
             for frame in range(self.frame_idx,len(self.data)):
-                for item in self.data[frame]:
-                    if item["id"] == obj_idx:
-                        item["y"] += dy
+                item =  self.data[frame].get(obj_idx)
+                if item is not None:
+                    item["y"] += dy
                 break
         else:
             # shift x for obj_idx in this and all subsequent frames
-            for frame in range(self.frame_idx,len(self.data)):
-                for item in self.data[frame]:
-                    if item["id"] == obj_idx:
-                        item["x"] += dx
+           for frame in range(self.frame_idx,len(self.data)):
+                item =  self.data[frame].get(obj_idx)
+                if item is not None:
+                    item["x"] += dx
                 break
-                        
-        self.recompute_velocity(obj_idx)
-        
+                                
     
     def change_class(self,obj_idx,cls):
          for frame in range(0,len(self.data)):
-            for item in self.data[frame]:
-                if item["id"] == obj_idx:
-                    item["class"] = cls
+             item =  self.data[frame].get(obj_idx)
+             if item is not None:
+                 item["class"] = cls
     
     def dimension(self,obj_idx,box):
         """
@@ -429,19 +355,16 @@ class Annotator():
             relevant_key = "w"
         
         for frame in range(0,len(self.data)):
-            for item in self.data[frame]:
-                if item["id"] == obj_idx:
-                    item[relevant_key] += relevant_change
+             item =  self.data[frame].get(obj_idx)
+             if item is not None:
+                 item[relevant_key] += relevant_change
    
     def copy_paste(self,point):     
         if self.copied_box is None:
             obj_idx = self.find_box(point)
             state_point = self.box_to_state(point)[0]
-            
-            for box in self.data[self.frame_idx]:
-                if box["id"] == obj_idx:
-                    base_box = box.copy()
-                    break
+            item =  self.data[self.frame_idx].get(obj_idx)
+            base_box = item.copy()
             
             # save the copied box
             self.copied_box = (obj_idx,base_box,[state_point[0],state_point[1]].copy())
@@ -463,23 +386,16 @@ class Annotator():
             new_obj["timestamp"] = self.current_ts
             new_obj["camera"] = self.clicked_camera
             
+            # remove existing box if there is one
             del_idx = -1
-            for o_idx,obj in enumerate(self.data[self.frame_idx]):
-                if obj["id"] == obj_idx:
-                    del_idx = o_idx
-                    break
+            obj = self.data[self.frame_idx][obj_idx]
+            if obj is not None:
+                del_idx = obj_idx
             if del_idx != -1:
                 del self.data[self.frame_idx][del_idx]
                 
             self.data[self.frame_idx].append(new_obj)
             self.recompute_velocity(obj_idx)
-       
-    # def print_all(self,obj_idx):
-    #     for f_idx in range(0,len(self.data)):
-    #         frame_data = self.data[f_idx]
-    #         for obj in frame_data:
-    #             if obj["id"] == obj_idx:
-    #                 print(obj)
             
     def interpolate(self,obj_idx):
         
@@ -566,10 +482,8 @@ class Annotator():
         
         while frame_idx < stop_idx:
             try:
-                for idx,obj in enumerate(self.data[frame_idx]):
-                    if obj["id"] == obj_idx:
-                        del self.data[frame_idx][idx]
-                        break
+                if self.data[frame_idx].get(obj_idx) is not None:
+                    del self.data[frame_idx][obj_idx]
             except KeyError:
                 pass
             frame_idx += 1
@@ -579,8 +493,8 @@ class Annotator():
     def get_unused_id(self):
         all_ids = []
         for frame_data in self.data:
-            for datum in frame_data:
-                all_ids.append(datum["id"])
+            for keys in frame_data.keys():
+                all_ids += keys
                 
         all_ids = list(set(all_ids))
         
@@ -632,7 +546,7 @@ class Annotator():
         min_dist = np.inf
         min_id = None
         
-        for box in self.data[self.frame_idx]:
+        for box in self.data[self.frame_idx].values():
             
             dist = (box["x"] - state_point[0] )**2 + (box["y"] - state_point[1])**2
             if dist < min_dist:
@@ -669,49 +583,6 @@ class Annotator():
         else:
             print("Can't undo")
     
-    # def analyze_trajectory(self,obj_idx):
-    #     """
-    #     Create position and velocity timeseries and plot
-    #     """
-    #     x = []
-    #     y = []
-    #     v = []
-    #     time = []
-        
-    #     for frame in range(0,len(self.data)):
-    #         for item in self.data[frame]:
-    #             if item["id"] == obj_idx:
-    #                 x.append(item["x"])
-    #                 y.append(item["y"])
-    #                 v.append(item["v"])
-    #                 time.append(item["timestamp"])
-                    
-    #     time = [item - min(time) for item in time]
-        
-    #     fig, axs = plt.subplots(3,sharex = True,figsize = (12,8))
-    #     axs[0].plot(time,x,color = (0,0,1))
-    #     axs[1].plot(time,v,color = (0,1,0))
-    #     axs[2].plot(time,y,color = (1,0,0))
-        
-    #     axs[2].set(xlabel='time(s)', ylabel='Y-pos (ft)')
-    #     axs[1].set(ylabel='Velocity (ft/s)')
-    #     axs[0].set(ylabel='X-pos (ft)')
-
-    #     x_smooth = savgol_filter(x, 45, 1)
-    #     axs[0].plot(time,x_smooth,color = (0,0,0.2))
-        
-    #     v2 = [(x_smooth[i] - x_smooth[i-1]) / (time[i] - time[i-1]) for i in range(1,len(x_smooth))]
-    #     axs[1].plot(time[:-1],v2,color = (0,0.7,0.3))
-        
-    #     v3 = savgol_filter(v,45,1)
-    #     axs[1].plot(time,v3,color = (0,0.3,0.7))
-    #     axs[1].legend(["v from unsmoothed x","v from smoothed x","directly smoothed v"])
-        
-    #     y_smooth = savgol_filter(y,45,1)
-    #     axs[2].plot(time,y_smooth,color = (0.8,0.2,0))
-        
-    #     plt.show()  
-    #     #self.smooth_trajectory(obj_idx)
        
     def plot_all_trajectories(self):
         all_x = []
@@ -725,12 +596,12 @@ class Annotator():
             time = []
             
             for frame in range(0,len(self.data)):
-                for item in self.data[frame]:
-                    if item["id"] == obj_idx:
-                        x.append(item["x"])
-                        y.append(item["y"])
-                        v.append(item["v"])
-                        time.append(item["timestamp"])
+                item = self.data[frame].get(obj_idx)
+                if item is not None:
+                    x.append(item["x"])
+                    y.append(item["y"])
+                    v.append(item["v"])
+                    time.append(item["timestamp"])
                         
             time = [item - min(time) for item in time]
             
@@ -754,43 +625,6 @@ class Annotator():
        
         
         plt.show()  
-
-        
-    # def smooth_trajectory(self,obj_idx):
-    #     """
-    #     Applies hamming smoother to velocity and position data
-    #     """
-        
-    #     x = []
-    #     y = []
-    #     v = []
-    #     time = []
-        
-    #     for frame in range(0,len(self.data)):
-    #         for item in self.data[frame]:
-    #             if item["id"] == obj_idx:
-    #                 x.append(item["x"])
-    #                 y.append(item["y"])
-    #                 v.append(item["v"])
-    #                 time.append(item["timestamp"])
-                    
-    #     time = [item - min(time) for item in time]
-        
-       
-
-    #     x_smooth = savgol_filter(x, 45, 1)
-    #     v_smooth = [(x_smooth[i] - x_smooth[i-1]) / (time[i] - time[i-1]) for i in range(1,len(x_smooth))]
-    #     v_smooth = [v_smooth[0]] + v_smooth
-    #     y_smooth = savgol_filter(y,45,1)
-        
-    #     idx = 0
-    #     for frame in range(0,len(self.data)):
-    #         for item in self.data[frame]:
-    #             if item["id"] == obj_idx:
-    #                 item["x"] = x_smooth[idx] 
-    #                 item["y"] = y_smooth[idx]
-    #                 item["v"] = v_smooth[idx]
-    #                 idx+= 1
         
     def estimate_ts_bias(self):
         """
@@ -938,7 +772,7 @@ class Annotator():
             for i,ts_data in enumerate(self.data):
                 print("\rWriting outputs for time {} of {}".format(i,len(self.data)), end = '\r', flush = True)
 
-                for item in ts_data:
+                for item in ts_data.values():
                     id = item["id"]
                     timestamp = item["timestamp"]
                     cls = item["class"]
@@ -1150,7 +984,7 @@ class Annotator():
     
     
 if __name__ == "__main__":
-    overwrite = False
+    overwrite = True
     
     directory = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k"
     if overwrite:

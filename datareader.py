@@ -549,7 +549,8 @@ class Data_Reader():
         
 if __name__ == "__main__":
            
-    data_csv = "/home/worklab/Documents/derek/3D-playground/_outputs/3D_tracking_results_10_27.csv"    
+    data_csv = "/home/worklab/Documents/derek/3D-playground/_outputs/3D_tracking_results_10_27.csv"   
+    data_csv = "/home/worklab/Downloads/MC.csv"
     #data_csv = "/home/worklab/Documents/derek/3D-playground/reinterpolated_3D_tracking_outputs.csv"        
     #data_csv = "/home/worklab/Downloads/MC_rectified (1).csv"
     
@@ -558,11 +559,11 @@ if __name__ == "__main__":
                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",
                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c5_0_4k.mp4"]
     
-    # with open("i24_all_homography.cpkl","rb") as f:
-    #         hg = pickle.load(f)
+    #with open("i24_all_homography.cpkl","rb") as f:
+    #        hg = pickle.load(f)
     hg = Homography_Wrapper()
             
             
     dr = Data_Reader(data_csv,hg, metric = False)
-    dr.reinterpolate(save = None)
+    #dr.reinterpolate(save = None)
     dr.plot_in(sequences,framerate = 10)

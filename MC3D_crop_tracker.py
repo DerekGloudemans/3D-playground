@@ -59,10 +59,10 @@ class MC_Crop_Tracker():
         """
         
         # parse params
-        self.sigma_d = params['sigma_d'] if 'sigma_d' in params else 0.4                        # minimum detection confidence
-        self.sigma_c = params['sigma_c'] if 'sigma_c' in params else 0.4                        # minimum crop detection confidence
+        self.sigma_d = params['sigma_d'] if 'sigma_d' in params else 0.1                      # minimum detection confidence
+        self.sigma_c = params['sigma_c'] if 'sigma_c' in params else 0.1                        # minimum crop detection confidence
 
-        self.sigma_min =  params['sigma_min'] if 'sigma_min' in params else 0.7                 # we require an object to have at least 3 confidences > sigma_min within f_init frames to persist
+        self.sigma_min =  params['sigma_min'] if 'sigma_min' in params else 0.5                 # we require an object to have at least 3 confidences > sigma_min within f_init frames to persist
         self.f_init =  params['f_init'] if 'f_init' in params else 5                            # number of frames before objects are considered permanent 
                 
         self.phi_nms_space = params['phi_nms_space'] if 'phi_nms_space' in params else 0.2      # overlapping objects are pruned by NMS during detection parsing
@@ -78,7 +78,7 @@ class MC_Crop_Tracker():
         self.d = params['d'] if 'd' in params else 1                                            # dense detection frequency (1 is every frame, -1 is never, 2 is every 2 frames, etc)
         self.s = params['s'] if 's' in params else 1                                           # measurement frequency (if 1, every frame, if 2, measure every 2 frames, etc)
         self.q = params["q"] if "q" in params else 1                                            # target number of measurement queries per object per frame (assuming more than one camera is available)
-        self.max_size = params['max_size'] if 'max_size' in params else torch.tensor([85,15,15])# max object size (L,W,H) in feet
+        self.max_size = params['max_size'] if 'max_size' in params else torch.tensor([100,15,15])# max object size (L,W,H) in feet
         
         self.est_ts = True
         self.ts_alpha = 0.05
@@ -92,7 +92,7 @@ class MC_Crop_Tracker():
         
         
         # get GPU
-        device_id = params["GPU"] if "GPU" in params else 0
+        device_id = params["GPU"] if "GPU" in params else torch.cuda.current_device()
         use_cuda = torch.cuda.is_available()
         self.device = torch.device("cuda:{}".format(device_id) if use_cuda else "cpu")
         torch.cuda.set_device(device_id)
@@ -782,7 +782,7 @@ class MC_Crop_Tracker():
                     im = self.hg.plot_state_boxes(im,boxes,name = cam_id,color = (0,100,150),thickness = 2)
             
             # plot time unadjusted boxes
-            if True:
+            if False:
                 _,boxes = self.filter.view(with_direction = True)
                 if len(boxes) > 0:
                     im = self.hg.plot_state_boxes(im,boxes,name = cam_id,color = (0,100,150),thickness = 2)
@@ -1467,12 +1467,12 @@ class MC_Crop_Tracker():
         
         
 if __name__ == "__main__":
-    
+    torch.cuda.set_device(1)
     # inputs
-    sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c2_0_4k.mp4",
-                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4",
-                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",
-                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c5_0_4k.mp4"]
+    sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c2_0_4k.mp4"]
+                 # "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4",
+                 # "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",
+                 # "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c5_0_4k.mp4"]
     
     # sequences = ["/home/worklab/Data/cv/video/08_06_2021/p1c2_0_4k.mp4",
     #              "/home/worklab/Data/cv/video/08_06_2021/p1c3_0_4k.mp4",
@@ -1527,7 +1527,7 @@ if __name__ == "__main__":
         centers[camera_id] = [(rmin + rmax)/2.0,y_center]
     
     params = {
-        "x_range": [x_min,x_max],
+        "x_range": [x_min-100,x_max+100],
         "cam_centers": centers
         }
 
@@ -1633,7 +1633,7 @@ if __name__ == "__main__":
     cutoff_frame = 9000
     OUT = "track_ims"
     
-    tracker = MC_Crop_Tracker(sequences,detector,kf_params,hg,class_dict, params = params, OUT = OUT,PLOT = True,early_cutoff = cutoff_frame,cd = crop_detector)
+    tracker = MC_Crop_Tracker(sequences,detector,kf_params,hg,class_dict, params = params, OUT = OUT,PLOT = False,early_cutoff = cutoff_frame,cd = crop_detector)
     tracker.track()
     tracker.write_results_csv()
     
