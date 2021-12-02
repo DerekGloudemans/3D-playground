@@ -37,7 +37,8 @@ class Camera_Wrapper():
         self.frame = None
         self.ts = None
         self.name = re.search("p\dc\d",sequence).group(0)
-
+        
+        self.all_ts = []
     
     def __next__(self):
         last_ts = self.ts
@@ -47,12 +48,17 @@ class Camera_Wrapper():
         if self.ts is None:
             self.ts = last_ts + 1/30.0
         
+        self.all_ts.append(self.ts)
+
+        
         if self.ds == 2:
             self.frame = cv2.resize(self.frame,(1920,1080))
             
     def release(self):
         self.cap.release()
-           
+        
+    def __len__(self):
+        return int(self.cap.get(7))      
 
 class Data_Reader():
     
@@ -134,8 +140,9 @@ class Data_Reader():
                         vel     = float(row[38])
                         id      =   int(float(row[2]))
                         cls     =       row[3]
-                        ts      = np.round(float(row[1]),4)
-                        camera =  row[36]
+                        ts      =  np.round(float(row[1]),4)
+                        camera  =  row[36]
+                        frame   =  row[0] 
                         if camera == "":
                             camera = "p1c1" # default
                         
@@ -169,7 +176,8 @@ class Data_Reader():
                         "direction":direc,
                         "v":vel,
                         "ts_bias":offsets,
-                        "camera":camera
+                        "camera":camera,
+                        "frame":frame
                         }
                     
                     
