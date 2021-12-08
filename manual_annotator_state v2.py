@@ -3,6 +3,7 @@ import os
 import cv2
 import csv
 import copy
+import sys
 import argparse
 import string
 import cv2 as cv
@@ -16,7 +17,14 @@ from datareader import Data_Reader, Camera_Wrapper
 
 from scipy.signal import savgol_filter
 
+from torchvision.transforms import functional as F
+from torchvision.ops import roi_align, nms
 
+detector_path = os.path.join("/home/worklab/Documents/derek/i24-dataset-gen/track/model/pytorch_retinanet_detector")
+sys.path.insert(0,detector_path)
+
+# filter and CNNs
+from retinanet.model import resnet50 
 
 class Annotator():
     """ 
@@ -70,7 +78,7 @@ class Annotator():
         # get sequences
         self.sequences = {}
         for sequence in os.listdir(sequence_directory):    
-            if "_0" in sequence: 
+            if "_0" in sequence and "p3c6" not in sequence: 
                 cap = Camera_Wrapper(os.path.join(sequence_directory,sequence))
                 self.sequences[cap.name] = cap
         
@@ -118,7 +126,7 @@ class Annotator():
 
         # get first frames from each camera according to first frame of data
         self.buffer_frame_idx = -1
-        self.buffer_lim = 500
+        self.buffer_lim = 700
         self.buffer = []
         
         self.frame_idx = 0
@@ -137,6 +145,13 @@ class Annotator():
         self.label_buffer = copy.deepcopy(self.data)
     
         self.colors =  np.random.rand(2000,3)
+        
+        loc_cp = "/home/worklab/Documents/derek/i24-dataset-gen/track/_config/localizer_april_112.pt"
+        self.detector = resnet50(num_classes=8)
+        cp = torch.load(loc_cp)
+        self.detector.load_state_dict(cp) 
+        self.detector.cuda()
+        self.AUTO = True
     
     def safe(self,x):
         """
@@ -157,6 +172,12 @@ class Annotator():
         for f_idx in range(len(self.data)):
             self.data[f_idx] = {}
         
+    def count(self):
+        count = 0
+        for frame_data in self.data:
+            for key in frame_data.keys():
+                count += 1
+        print("{} total boxes".format(count))
     
     def toggle_cams(self,dir):
         """dir should be -1 or 1"""
@@ -198,6 +219,8 @@ class Annotator():
         """
         Advance a "frame"
         """        
+        self.AUTO = True
+
         if self.frame_idx < len(self.data):
             self.frame_idx += 1
             
@@ -216,6 +239,9 @@ class Annotator():
     
     
     def prev(self):
+        self.AUTO = True
+
+        
         if self.frame_idx > 0 and self.buffer_frame_idx > -self.buffer_lim:
             self.frame_idx -= 1            
             self.buffer_frame_idx -= 1
@@ -245,7 +271,7 @@ class Annotator():
                im_boxes = self.hg.state_to_im(boxes,name = camera.name)
                 
                # plot on frame
-               frame = self.hg.plot_state_boxes(frame,boxes,name = camera.name,color = (255,0,0),secondary_color = (0,255,0),thickness = 2)
+               frame = self.hg.plot_state_boxes(frame,boxes,name = camera.name,color = (255,0,0),secondary_color = (0,255,0),thickness = 1)
     
                
                # plot labels
@@ -257,7 +283,7 @@ class Annotator():
                directions = ["WB" if item == -1 else "EB" for item in directions]
                camera.frame = Data_Reader.plot_labels(None,frame,im_boxes,boxes,classes,ids,speeds,directions,times)
            
-           
+            
            # print the estimated time_error for camera relative to first sequence
            error_label = "Estimated Frame Time: {}".format(frame_ts)
            text_size = 1.6
@@ -309,8 +335,8 @@ class Annotator():
         
         key = "{}_{}".format(self.clicked_camera,obj_idx)
         self.data[self.frame_idx][key] = obj
-        
-        print("Added obj {} at ({})".format(obj_idx,xy))
+        self.save2()
+
     
     def box_to_state(self,point,direction = False):
         """
@@ -362,11 +388,163 @@ class Annotator():
                                 
     
     def change_class(self,obj_idx,cls):
-         for frame in range(0,len(self.data)):
-             key = "{}_{}".format(self.clicked_camera,obj_idx)
-             item =  self.data[frame].get(key)
-             if item is not None:
-                 item["class"] = cls
+        for camera in self.cameras:
+             cam_name = camera.name
+             for frame in range(0,len(self.data)):
+                 key = "{}_{}".format(cam_name,obj_idx)
+                 item =  self.data[frame].get(key)
+                 if item is not None:
+                     item["class"] = cls
+    
+    def paste_in_2D_bbox(self,box):
+        """
+        Finds best position for copied box such that the image projection of that box 
+        matches the 2D bbox with minimal MSE error
+        """
+        
+        if self.copied_box is None:
+            return
+        
+        base = self.copied_box[1].copy()
+        center = self.box_to_state(box).mean(dim = 0)
+        print("Center:",center)
+        
+        search_rad = 100
+        grid_size = 10
+        while search_rad > 1:
+            x = np.linspace(center[0]-search_rad,center[0]+search_rad,grid_size)
+            y = np.linspace(center[1]-search_rad,center[1]+search_rad,grid_size)
+            shifts = []
+            for i in x:
+                for j in y:
+                    shift_box = torch.tensor([i,j, base["l"],base["w"],base["h"],base["direction"]])
+                    shifts.append(shift_box)
+        
+            # convert shifted grid of boxes into 2D space
+            shifts = torch.stack(shifts)
+            boxes_space = self.hg.state_to_im(shifts,name = self.clicked_camera)
+            
+            # find 2D bbox extents of each
+            boxes_new =   torch.zeros([boxes_space.shape[0],4])
+            boxes_new[:,0] = torch.min(boxes_space[:,:,0],dim = 1)[0]
+            boxes_new[:,2] = torch.max(boxes_space[:,:,0],dim = 1)[0]
+            boxes_new[:,1] = torch.min(boxes_space[:,:,1],dim = 1)[0]
+            boxes_new[:,3] = torch.max(boxes_space[:,:,1],dim = 1)[0]
+            
+            # compute error between 2D box and each shifted box
+            box_expanded = torch.from_numpy(box).unsqueeze(0).repeat(boxes_new.shape[0],1)  
+            error = ((boxes_new - box_expanded)**2).mean(dim = 1)
+            
+            # find min_error and assign to center
+            min_idx = torch.argmin(error)
+            center = x[min_idx//grid_size],y[min_idx%grid_size]
+            search_rad /= 5
+            #print("With search_granularity {}, best error {} at {}".format(search_rad/grid_size,torch.sqrt(error[min_idx]),center))
+        
+        # save box
+        base["x"] = self.safe(center[0])
+        base["y"] = self.safe(center[1])
+        key = "{}_{}".format(self.clicked_camera,base["id"])
+        self.data[self.frame_idx][key] = base
+        
+    def automate(self,obj_idx):
+        """
+        Crop locally around expected box coordinates based on constant velocity
+        assumption. Localize on this location. Use the resulting 2D bbox to align 3D template
+        Repeat at regularly spaced intervals until expected object location is out of frame
+        """
+        # store base box for future copy ops
+        cam = self.clicked_camera
+        key = "{}_{}".format(cam,obj_idx)
+        prev_box = self.data[self.frame_idx].get(key)
+        
+        if prev_box is None:
+            return
+        
+        for c_idx in range(len(self.cameras)):
+            if self.cameras[c_idx].name == cam:
+                break
+        
+        crop_state = torch.tensor([prev_box["x"],prev_box["y"],prev_box["l"],prev_box["w"],prev_box["h"],prev_box["direction"]]).unsqueeze(0)
+        boxes_space = self.hg.state_to_im(crop_state,name = cam)
+        boxes_new =   torch.zeros([boxes_space.shape[0],4])
+        boxes_new[:,0] = torch.min(boxes_space[:,:,0],dim = 1)[0]
+        boxes_new[:,2] = torch.max(boxes_space[:,:,0],dim = 1)[0]
+        boxes_new[:,1] = torch.min(boxes_space[:,:,1],dim = 1)[0]
+        boxes_new[:,3] = torch.max(boxes_space[:,:,1],dim = 1)[0]
+        crop_box = boxes_new[0]
+        
+        # if crop box is near edge, break
+        if crop_box[0] < 0 or crop_box[1] < 0 or crop_box[2] > 1920 or crop_box[3] > 1080:
+            return
+        
+        # copy current frame
+        frame = self.buffer[self.buffer_frame_idx][c_idx][0].copy()
+        
+        # get 2D bbox from detector
+        box_2D = self.crop_detect(frame,crop_box)
+        box_2D = box_2D.data.numpy()
+        
+        #shift to right view if necessary
+        if self.active_cam != c_idx:
+            box_2D[[0,2]] += 1920
+        
+        # find corresponding 3D bbox
+        self.paste_in_2D_bbox(box_2D)
+        
+        # show 
+        self.plot()
+        
+        # plot Crop box and 2D box
+        # self.plot_frame = cv2.rectangle(self.plot_frame,(int(crop_box[0]),int(crop_box[1])),(int(crop_box[2]),int(crop_box[3])),(0,0,255),2)
+        # self.plot_frame = cv2.rectangle(self.plot_frame,(int(box_2D[0]),int(box_2D[1])),(int(box_2D[2]),int(box_2D[3])),(0,0,255),1)
+        # cv2.imshow("window", self.plot_frame)
+        # cv2.waitKey(0)
+    
+    def crop_detect(self,frame,crop,ber = 1.2,cs = 112):
+        """
+        Detects a single object within the cropped portion of the frame
+        """
+        
+        # expand crop to square size
+        
+        
+        w = crop[2] - crop[0]
+        h = crop[3] - crop[1]
+        scale = max(w,h) * ber
+        
+        
+        # find a tight box around each object in xysr formulation
+        minx = (crop[2] + crop[0])/2.0 - (scale)/2.0
+        maxx = (crop[2] + crop[0])/2.0 + (scale)/2.0
+        miny = (crop[3] + crop[1])/2.0 - (scale)/2.0
+        maxy = (crop[3] + crop[1])/2.0 + (scale)/2.0
+        crop = torch.tensor([0,minx,miny,maxx,maxy])
+        
+        # crop and normalize image
+        im = F.to_tensor(frame)
+        im = roi_align(im.unsqueeze(0),crop.unsqueeze(0).unsqueeze(0).float(),(cs,cs))[0]
+        im = F.normalize(im,mean=[0.485, 0.456, 0.406],
+                                          std=[0.229, 0.224, 0.225]).unsqueeze(0)
+        im = im.cuda()
+        
+        # detect
+        self.detector.eval()
+        self.detector.training = False
+        with torch.no_grad():                       
+            reg_boxes, classes = self.detector(im,LOCALIZE = True)
+            confs,classes = torch.max(classes, dim = 2)
+            
+        # select best box
+        max_idx = torch.argmax(confs.squeeze(0))
+        max_box = reg_boxes[0,max_idx].data.cpu()
+        
+        # convert to global frame coordinates
+        max_box = max_box * scale / cs
+        max_box[[0,2]] += minx
+        max_box[[1,3]] += miny
+        return max_box
+        
     
     def dimension(self,obj_idx,box):
         """
@@ -382,38 +560,58 @@ class Annotator():
         dx = state_box[1,0] - state_box[0,0]
         dy = state_box[1,1] - state_box[0,1]
         dh = -(box[3] - box[1]) * 0.02 # we say that 50 pixels in y direction = 1 foot of change
-              
+        
+        key = "{}_{}".format(self.clicked_camera,obj_idx)
+        
+        try:
+            l = self.data[self.frame_idx][key]["l"]
+            w = self.data[self.frame_idx][key]["w"]
+            h = self.data[self.frame_idx][key]["h"]
+        except:
+            return
+        
         if self.right_click:
-            relevant_change = dh
+            relevant_change = dh + h
             relevant_key = "h"
         elif np.abs(dx) > np.abs(dy): 
-            relevant_change = dx
+            relevant_change = dx + l
             relevant_key = "l"
         else:
-            relevant_change = dy
+            relevant_change = dy + w
             relevant_key = "w"
         
-        for frame in range(0,len(self.data)):
-             key = "{}_{}".format(self.clicked_camera,obj_idx)
-             item =  self.data[frame].get(key)
-             if item is not None:
-                 item[relevant_key] += relevant_change
+        for camera in self.cameras:
+            cam = camera.name
+            for frame in range(0,len(self.data)):
+                 key = "{}_{}".format(cam,obj_idx)
+                 item =  self.data[frame].get(key)
+                 if item is not None:
+                     item[relevant_key] = relevant_change
    
-    
+        # also adjust the copied box if necessary
+        if self.copied_box is not None and self.copied_box[0] == obj_idx:
+             self.copied_box[1][relevant_key] = relevant_change
     
     def copy_paste(self,point):     
         if self.copied_box is None:
             obj_idx = self.find_box(point)
+            
+            if obj_idx is None:
+                return
+            
             state_point = self.box_to_state(point)[0]
             
             key = "{}_{}".format(self.clicked_camera,obj_idx)
             obj =  self.data[self.frame_idx].get(key)
+            
+            if obj is None:
+                return
+            
             base_box = obj.copy()
             
             # save the copied box
             self.copied_box = (obj_idx,base_box,[state_point[0],state_point[1]].copy())
             
-            print("Copied template object for id {}".format(obj_idx))
         
         else: # paste the copied box
             state_point = self.box_to_state(point)[0]
@@ -438,6 +636,10 @@ class Annotator():
                 del self.data[self.frame_idx][key]
                 
             self.data[self.frame_idx][key] = new_obj
+            
+            if self.AUTO:
+                self.automate(obj_idx)
+                self.AUTO = False
             
     def interpolate(self,obj_idx):
         
@@ -546,7 +748,6 @@ class Annotator():
                 pass
             frame_idx += 1
         
-        print("Deleted obj {} in frame {} and all subsequent frames".format(obj_idx,self.frame_idx))    
    
     def get_unused_id(self):
         all_ids = []
@@ -694,13 +895,13 @@ class Annotator():
             cidx = all_ids[i]
             mk = ["s","D","o"][i%3]
             
-            axs[0].scatter(all_time[i],all_x[i],c = colors[cidx:cidx+1]/(i%3+1),marker = mk)
-            axs[1].scatter(all_time[i],all_v[i],c = colors[cidx:cidx+1]/(i%3+1),marker = mk)
-            axs[2].scatter(all_time[i],all_y[i],c = colors[cidx:cidx+1]/(i%3+1),marker = mk)
+            # axs[0].scatter(all_time[i],all_x[i],c = colors[cidx:cidx+1]/(i%3+1),marker = mk)
+            # axs[1].scatter(all_time[i],all_v[i],c = colors[cidx:cidx+1]/(i%3+1),marker = mk)
+            # axs[2].scatter(all_time[i],all_y[i],c = colors[cidx:cidx+1]/(i%3+1),marker = mk)
             
-            axs[0].plot(all_time[i],all_x[i],color = colors[cidx]/(i%3+1))
-            axs[1].plot(all_time[i],all_v[i],color = colors[cidx]/(i%3+1))
-            axs[2].plot(all_time[i],all_y[i],color = colors[cidx]/(i%3+1))
+            axs[0].plot(all_time[i],all_x[i],color = colors[cidx])#/(i%1+1))
+            axs[1].plot(all_time[i],all_v[i],color = colors[cidx])#/(i%3+1))
+            axs[2].plot(all_time[i],all_y[i],color = colors[cidx])#/(i%3+1))
             
             axs[2].set(xlabel='time(s)', ylabel='Y-pos (ft)')
             axs[1].set(ylabel='Velocity (ft/s)')
@@ -752,6 +953,7 @@ class Annotator():
                         c0t.append(self.safe(obj["timestamp"]))
             
                 if len(c0x) > 1 and len(c1x) > 1 and max(c0x) > min (c1x):
+                    
                     # camera objects overlap from minx to maxx
                     minx = max(min(c1x),min(c0x))
                     maxx = min(max(c1x),max(c0x))
@@ -765,21 +967,24 @@ class Annotator():
                         sample_points.append(point)
                         
                     for point in sample_points:
+                        time = None
+                        prev_time = None
                         # estimate time at which cam object was at point
                         for i in range(1,len(c1x)):
-                            if c1x[i] >= point and c1x[i-1] <= point:
+                            if (c1x[i] - point) *  (c1x[i-1]- point) <= 0:
                                 ratio = (point-c1x[i-1])/ (c1x[i]-c1x[i-1])
                                 time = c1t[i-1] + (c1t[i] - c1t[i-1])*ratio
                         
                         # estimate time at which prev_cam object was at point
                         for j in range(1,len(c0x)):
-                            if c0x[j] >= point and c0x[j-1] <= point:
+                            if (c0x[j] - point) *  (c0x[j-1]- point) <= 0:
                                 ratio = (point-c0x[j-1])/ (c0x[j]-c0x[j-1])
                                 prev_time = c0t[j-1] + (c0t[j] - c0t[j-1])*ratio
                         
                         # relative to previous camera, cam time is diff later when object is at same location
-                        diff = self.safe(time - prev_time)
-                        diffs.append(diff)
+                        if time and prev_time:
+                            diff = self.safe(time - prev_time)
+                            diffs.append(diff)
             
             # after all objects have been considered
             if len(diffs) > 0:
@@ -793,12 +998,15 @@ class Annotator():
                 print("Camera {} ofset relative to camera {}: {}s ({})s stdev".format(cam,prev_cam,avg_diff,stdev))
                 self.ts_bias[cam_idx] = abs_bias
             
-        
+            else:
+                print("No matching points for cameras {} and {}".format(cam,prev_cam))
     
     def save2(self):
         with open("labeler_cache.cpkl","wb") as f:
             data = [self.data,self.all_ts,self.ts_bias,self.hg]
             pickle.dump(data,f)
+            print("Saved labels")
+            self.count()
     
     def reload(self):
          with open("labeler_cache.cpkl","rb") as f:
@@ -1007,6 +1215,13 @@ class Annotator():
                 elif self.active_command == "HOMOGRAPHY":
                     self.correct_homography_Z(self.new)
                 
+                elif self.active_command == "2D PASTE":
+                    self.paste_in_2D_bbox(self.new)
+                    
+                elif self.active_command == "AUTOMATE":
+                    obj_idx = self.find_box(self.new)
+                    self.automate(obj_idx)
+                
                 self.plot()
                 self.new = None   
                 
@@ -1032,7 +1247,8 @@ class Annotator():
                 self.plot()
            elif key == ord("q"):
                self.quit()
-               
+           elif key == ord("w"):
+               self.save2()
                
            elif key == ord("["):
                self.toggle_cams(-1)
@@ -1042,11 +1258,17 @@ class Annotator():
            elif key == ord("u"):
                self.undo()
            elif key == ord("-"):
-                [self.prev() for i in range(15)]
+                [self.prev() for i in range(20)]
                 self.plot()
            elif key == ord("="):
-                [self.next() for i in range(15)]
+                [self.next() for i in range(20)]
                 self.plot()
+           elif key == ord("+"):
+               print("Filling buffer...")
+               [self.next() for i in range(self.buffer_lim-1)]
+               self.plot()
+               print("Done")
+               
            elif key == ord("?"):
                self.estimate_ts_bias()
                self.plot_all_trajectories()
@@ -1069,11 +1291,13 @@ class Annotator():
                self.active_command = "VEHICLE CLASS"
            elif key == ord("t"):
                self.active_command = "TIME BIAS"
-           elif key == ord("/"):
-               self.active_command = "VELOCITY"
-           elif key == ord("'"):
+           elif key == ord("h"):
                self.active_command = "HOMOGRAPHY"
-    
+           elif key == ord("p"):
+               self.active_command = "2D PASTE"
+           elif key == ord("!"):
+               self.active_command = "AUTOMATE"
+               
     
 if __name__ == "__main__":
     overwrite = False

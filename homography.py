@@ -9,7 +9,7 @@ import sys, os
 import csv
 import _pickle as pickle
 
-def get_homographies(save_file = "i24_all_homography.cpkl", directory = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform", direction = "EB"):
+def get_homographies(save_file = "i24_all_homography.cpkl", directory = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform2", direction = "EB"):
     """
     Returns a Homography object with pre-loaded correspondences
     save - (None or str) path to save_file - if file exists, it will be opened and returned
@@ -27,7 +27,7 @@ def get_homographies(save_file = "i24_all_homography.cpkl", directory = "/home/w
         
         
         hg = Homography()
-        for camera_name in ["p1c1","p1c2","p1c3","p1c4","p1c5","p1c6","p2c1","p2c2","p2c3","p2c4","p2c5","p2c6","p3c1","p3c2","p3c3","p3c4","p3c5"]:
+        for camera_name in ["p1c1","p1c2","p1c3","p1c4","p1c5","p1c6","p2c1","p2c2","p2c3","p2c4","p2c5","p2c6","p3c1","p3c2","p3c3","p3c4","p3c5","p3c6"]:
             
             print("Adding camera {} to homography".format(camera_name))
             
@@ -41,30 +41,35 @@ def get_homographies(save_file = "i24_all_homography.cpkl", directory = "/home/w
                     other_direction = "EB" if direction == "WB" else "WB"
                     point_file = os.path.join(directory,"{}_{}_im_lmcs_transform_points.csv".format(camera_name,other_direction))
 
-
-            labels,data = load_i24_csv(data_file)
-            
-            # ensure there are some boxes on which to fit
-            i = 0
-            frame_data = data[i]
-            while len(frame_data) == 0:
-                i += 1
-                frame_data = data[i]
-                
-            # convert labels from first frame into tensor form
-            boxes = []
-            classes = []
-            for item in frame_data:
-                if len(item[11]) > 0:
-                    boxes.append(np.array(item[11:27]).astype(float))
-                    classes.append(item[3])
-            boxes = torch.from_numpy(np.stack(boxes))
-            boxes = torch.stack((boxes[:,::2],boxes[:,1::2]),dim = -1)
-        
             # load homography
             hg.add_i24_camera(point_file,vp_file,camera_name)
-            heights = hg.guess_heights(classes)
-            hg.scale_Z(boxes,heights,name = camera_name)
+
+            try:
+                labels,data = load_i24_csv(data_file)
+                
+                # ensure there are some boxes on which to fit
+                i = 0
+                frame_data = data[i]
+                while len(frame_data) == 0:
+                    i += 1
+                    frame_data = data[i]
+                    
+                # convert labels from first frame into tensor form
+                boxes = []
+                classes = []
+                for item in frame_data:
+                    if len(item[11]) > 0:
+                        boxes.append(np.array(item[11:27]).astype(float))
+                        classes.append(item[3])
+                boxes = torch.from_numpy(np.stack(boxes))
+                boxes = torch.stack((boxes[:,::2],boxes[:,1::2]),dim = -1)
+            
+                # scale Z axis
+                
+                heights = hg.guess_heights(classes)
+                hg.scale_Z(boxes,heights,name = camera_name)
+            except:
+                pass
         
         with open(save_file,"wb") as f:
             pickle.dump(hg,f)
@@ -817,8 +822,8 @@ class Homography_Wrapper():
         self.hg2 = hg2
         
         if hg1 is None and hg2 is None:
-            self.hg1 = get_homographies(save_file = "EB_homography.cpkl")
-            self.hg2 = get_homographies(save_file = "WB_homography.cpkl")
+            self.hg1 = get_homographies(save_file = "EB_homography.cpkl",direction = "EB")
+            self.hg2 = get_homographies(save_file = "WB_homography.cpkl",direction = "WB")
         
     ## Pass-through functions 
     def guess_heights(self,classes):

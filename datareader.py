@@ -40,6 +40,8 @@ class Camera_Wrapper():
         
         self.all_ts = []
     
+        self.running_frame = None
+        
     def __next__(self):
         last_ts = self.ts
         ret,self.frame = self.cap.read()
@@ -53,6 +55,11 @@ class Camera_Wrapper():
         
         if self.ds == 2:
             self.frame = cv2.resize(self.frame,(1920,1080))
+            
+        if self.running_frame is None:
+            self.running_frame = self.frame
+        else:
+            self.running_frame = 0.95*self.running_frame + 0.05*self.frame
             
     def release(self):
         self.cap.release()
