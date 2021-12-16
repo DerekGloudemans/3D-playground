@@ -16,6 +16,7 @@ import time
 import argparse
 import _pickle as pickle
 import torch
+import copy
 
 import timestamp_utilities as tsu
 from homography import Homography_Wrapper, Homography
@@ -65,7 +66,13 @@ class Camera_Wrapper():
         self.cap.release()
         
     def __len__(self):
-        return int(self.cap.get(7))      
+        return int(self.cap.get(7))    
+    
+    def skip(count):
+        for i in range(count):
+            self.cap.grab()
+        
+        next(self)
 
 class Data_Reader():
     
@@ -561,7 +568,76 @@ class Data_Reader():
     
                         obj_line.append(ts_bias)
                         out.writerow(obj_line)
+
+def test_integrity(sequence):
+    """
+    Counts number of doubled timestamps, doubled frames, and doubled-timestamps and frames
+    """
+    
+    cam = Camera_Wrapper(sequence, ds = 1)
+    
+    next(cam)
+    prev_ts = cam.ts
+    prev_frame = cam.frame.copy()
+    
+    doubled_ts = 0
+    doubled_frame = 0
+    doubled_both = 0
+    correct = 0
+    skipped_ts = 0
+    n = 1000
+    
+    
+    for i in range(1,n):
         
+        next(cam)
+        DTS = False
+        DF = False
+        STS = False
+        ts = cam.ts
+        frame = cam.frame
+        
+        if ts - prev_ts == 0:
+            DTS = True
+        
+        if np.mean(np.abs(frame[100:500,100:500,:].astype(float) - prev_frame[100:500,100:500,:].astype(float))) < 0.2:
+            DF = True
+            
+        if DTS and DF:
+            doubled_both += 1
+        elif DTS:
+            doubled_ts += 1
+        elif DF:
+            doubled_frame += 1
+        elif (ts - prev_ts) > 0.05:
+            skipped_ts += 1
+            STS = True
+        else:
+            correct += 1
+            
+        if DTS or DF or STS:
+           #save both frames
+           cv2.imwrite("/home/worklab/Desktop/ex/{}_{}.png".format(cam.name,i),frame)
+           cv2.imwrite("/home/worklab/Desktop/ex/{}_{}.png".format(cam.name,i-1),prev_frame)
+           
+           next(cam)
+           cv2.imwrite("/home/worklab/Desktop/ex/{}_{}.png".format(cam.name,i+1),cam.frame)
+           next(cam)
+           cv2.imwrite("/home/worklab/Desktop/ex/{}_{}.png".format(cam.name,i+2),cam.frame)
+
+
+        prev_frame = cam.frame.copy()
+        prev_ts = cam.ts
+        
+    
+        #print("On frame {} of {}, with {} errors so far".format(i,len(cam),(doubled_ts + doubled_frame + doubled_both)))
+    
+    print("Camera {} results for {} frames:".format(cam.name,n))
+    print("Doubled timestamps occured {} times".format(doubled_ts))
+    print("Doubled both occured {} times".format(doubled_both))
+    print("Doubled frames occured {} times".format(doubled_frame))
+    print("Skipped timestamps occurred {} times".format(skipped_ts))
+
 if __name__ == "__main__":
            
     data_csv = "/home/worklab/Documents/derek/3D-playground/_outputs/3D_tracking_results_10_27.csv"   
@@ -569,16 +645,21 @@ if __name__ == "__main__":
     #data_csv = "/home/worklab/Documents/derek/3D-playground/reinterpolated_3D_tracking_outputs.csv"        
     #data_csv = "/home/worklab/Downloads/MC_rectified (1).csv"
     
-    sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c2_0_4k.mp4",
+    sequences = ["/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c1_0_4k.mp4",
+                "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c6_0_4k.mp4",
+                "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c2_0_4k.mp4",
                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c3_0_4k.mp4",
                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c4_0_4k.mp4",
                 "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k/p1c5_0_4k.mp4"]
     
-    #with open("i24_all_homography.cpkl","rb") as f:
-    #        hg = pickle.load(f)
-    hg = Homography_Wrapper()
+    # #with open("i24_all_homography.cpkl","rb") as f:
+    # #        hg = pickle.load(f)
+    # hg = Homography_Wrapper()
             
             
-    dr = Data_Reader(data_csv,hg, metric = False)
-    #dr.reinterpolate(save = None)
-    dr.plot_in(sequences,framerate = 10)
+    # dr = Data_Reader(data_csv,hg, metric = False)
+    # #dr.reinterpolate(save = None)
+    # dr.plot_in(sequences,framerate = 10)
+
+    for sequence in sequences:
+        test_integrity(sequence)

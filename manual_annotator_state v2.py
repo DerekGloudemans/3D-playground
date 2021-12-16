@@ -20,7 +20,7 @@ from scipy.signal import savgol_filter
 from torchvision.transforms import functional as F
 from torchvision.ops import roi_align, nms
 
-detector_path = os.path.join("/home/worklab/Documents/derek/i24-dataset-gen/track/model/pytorch_retinanet_detector")
+detector_path = os.path.join("retinanet")
 sys.path.insert(0,detector_path)
 
 # filter and CNNs
@@ -54,7 +54,7 @@ class Annotator():
     """
     
     
-    def __init__(self,data,sequence_directory,overwrite = False):
+    def __init__(self,sequence_directory):
         
         
         # # get data
@@ -103,10 +103,9 @@ class Annotator():
         self.active_cam = 0
         
         
-        if not overwrite:
-            self.reload()
-            
-        else:
+        try:
+            self.reload()  
+        except:
             self.data = []
             self.ts_bias = np.zeros(len(self.seq_keys))
             self.all_ts = []
@@ -146,12 +145,14 @@ class Annotator():
     
         self.colors =  np.random.rand(2000,3)
         
-        loc_cp = "/home/worklab/Documents/derek/i24-dataset-gen/track/_config/localizer_april_112.pt"
+        loc_cp = "./localizer_april_112.pt"
         self.detector = resnet50(num_classes=8)
         cp = torch.load(loc_cp)
         self.detector.load_state_dict(cp) 
         self.detector.cuda()
         self.AUTO = True
+        
+        self.stride = 20
     
     def safe(self,x):
         """
@@ -185,7 +186,13 @@ class Annotator():
         if self.active_cam + dir < len(self.seq_keys) -1 and self.active_cam + dir >= 0:
             self.active_cam += dir
             self.plot()
+            
+        self.AUTO = True
         
+        if self.cameras[self.active_cam].name in ["p1c3","p1c4","p2c3","p2c4","p3c3","p3c4"]:
+            self.stride = 10
+        else:
+            self.stride = 20
     
     def advance_cameras_to_current_ts(self):
         for c_idx,camera in enumerate(self.cameras):
@@ -330,7 +337,8 @@ class Annotator():
             "class":"midsize",
             "timestamp": self.all_ts[self.frame_idx][self.clicked_camera],
             "id": obj_idx,
-            "camera":self.clicked_camera
+            "camera":self.clicked_camera,
+            "gen":"Manual"
             }
         
         key = "{}_{}".format(self.clicked_camera,obj_idx)
@@ -364,6 +372,12 @@ class Annotator():
     
         
     def shift(self,obj_idx,box):
+        
+        key = "{}_{}".format(self.clicked_camera,obj_idx)
+        item =  self.data[self.frame_idx].get(key)
+        if item is not None:
+            item["gen"] = "Manual"
+        
         state_box = self.box_to_state(box)
         
         dx = state_box[1,0] - state_box[0,0]
@@ -407,10 +421,12 @@ class Annotator():
         
         base = self.copied_box[1].copy()
         center = self.box_to_state(box).mean(dim = 0)
-        print("Center:",center)
         
-        search_rad = 100
-        grid_size = 10
+        if box[0] > 1920:
+            box[[0,2]] -= 1920
+        
+        search_rad = 50
+        grid_size = 11
         while search_rad > 1:
             x = np.linspace(center[0]-search_rad,center[0]+search_rad,grid_size)
             y = np.linspace(center[1]-search_rad,center[1]+search_rad,grid_size)
@@ -439,11 +455,14 @@ class Annotator():
             min_idx = torch.argmin(error)
             center = x[min_idx//grid_size],y[min_idx%grid_size]
             search_rad /= 5
-            #print("With search_granularity {}, best error {} at {}".format(search_rad/grid_size,torch.sqrt(error[min_idx]),center))
+            print("With search_granularity {}, best error {} at {}".format(search_rad/grid_size,torch.sqrt(error[min_idx]),center))
         
         # save box
         base["x"] = self.safe(center[0])
         base["y"] = self.safe(center[1])
+        base["camera"] = self.clicked_camera
+        base["gen"] = "Manual"
+        base["timestamp"] = self.all_ts[self.frame_idx][self.clicked_camera]
         key = "{}_{}".format(self.clicked_camera,base["id"])
         self.data[self.frame_idx][key] = base
         
@@ -487,19 +506,20 @@ class Annotator():
         
         #shift to right view if necessary
         if self.active_cam != c_idx:
+            crop_box[[0,2]] += 1920
             box_2D[[0,2]] += 1920
         
         # find corresponding 3D bbox
-        self.paste_in_2D_bbox(box_2D)
+        self.paste_in_2D_bbox(box_2D.copy())
         
         # show 
         self.plot()
         
-        # plot Crop box and 2D box
-        # self.plot_frame = cv2.rectangle(self.plot_frame,(int(crop_box[0]),int(crop_box[1])),(int(crop_box[2]),int(crop_box[3])),(0,0,255),2)
-        # self.plot_frame = cv2.rectangle(self.plot_frame,(int(box_2D[0]),int(box_2D[1])),(int(box_2D[2]),int(box_2D[3])),(0,0,255),1)
-        # cv2.imshow("window", self.plot_frame)
-        # cv2.waitKey(0)
+        #plot Crop box and 2D box
+        self.plot_frame = cv2.rectangle(self.plot_frame,(int(crop_box[0]),int(crop_box[1])),(int(crop_box[2]),int(crop_box[3])),(0,0,255),2)
+        self.plot_frame = cv2.rectangle(self.plot_frame,(int(box_2D[0]),int(box_2D[1])),(int(box_2D[2]),int(box_2D[3])),(0,0,255),1)
+        cv2.imshow("window", self.plot_frame)
+        cv2.waitKey(100)
     
     def crop_detect(self,frame,crop,ber = 1.2,cs = 112):
         """
@@ -555,6 +575,11 @@ class Annotator():
                in pixels to height conversion
             2. otherwise, object is adjusted in the principle direction of displacement vector
         """
+        
+        key = "{}_{}".format(self.clicked_camera,obj_idx)
+        item =  self.data[self.frame_idx].get(key)
+        if item is not None:
+            item["gen"] = "Manual"
         
         state_box = self.box_to_state(box)
         dx = state_box[1,0] - state_box[0,0]
@@ -627,6 +652,7 @@ class Annotator():
             new_obj["y"]  = new_obj["y"].item()
             new_obj["timestamp"] = self.all_ts[self.frame_idx][self.clicked_camera]
             new_obj["camera"] = self.clicked_camera
+            new_obj["gen"] = "Manual"
             
             # remove existing box if there is one
             del_idx = -1
@@ -684,7 +710,8 @@ class Annotator():
                             "id": obj_idx,
                             "class": prev_box["class"],
                             "timestamp": self.all_ts[inter_idx][cam_name],
-                            "camera":cam_name
+                            "camera":cam_name,
+                            "gen":"Interpolation"
                             }
                         
                         key = "{}_{}".format(cam_name,obj_idx)
@@ -1196,7 +1223,6 @@ class Annotator():
                 elif self.active_command == "INTERPOLATE":
                     obj_idx = self.find_box(self.new)
                     self.interpolate(obj_idx)  
-                    self.plot_all_trajectories()
 
                 # correct vehicle class
                 elif self.active_command == "VEHICLE CLASS":
@@ -1218,9 +1244,6 @@ class Annotator():
                 elif self.active_command == "2D PASTE":
                     self.paste_in_2D_bbox(self.new)
                     
-                elif self.active_command == "AUTOMATE":
-                    obj_idx = self.find_box(self.new)
-                    self.automate(obj_idx)
                 
                 self.plot()
                 self.new = None   
@@ -1249,6 +1272,8 @@ class Annotator():
                self.quit()
            elif key == ord("w"):
                self.save2()
+               self.plot_all_trajectories()
+
                
            elif key == ord("["):
                self.toggle_cams(-1)
@@ -1258,14 +1283,16 @@ class Annotator():
            elif key == ord("u"):
                self.undo()
            elif key == ord("-"):
-                [self.prev() for i in range(20)]
+                [self.prev() for i in range(self.stride)]
                 self.plot()
            elif key == ord("="):
-                [self.next() for i in range(20)]
+                [self.next() for i in range(self.stride)]
                 self.plot()
            elif key == ord("+"):
                print("Filling buffer...")
-               [self.next() for i in range(self.buffer_lim-1)]
+               for i in range(self.buffer_lim - 1):
+                   self.next()
+                   print("On frame {}".format(self.frame_idx))
                self.plot()
                print("Done")
                
@@ -1295,24 +1322,18 @@ class Annotator():
                self.active_command = "HOMOGRAPHY"
            elif key == ord("p"):
                self.active_command = "2D PASTE"
-           elif key == ord("!"):
-               self.active_command = "AUTOMATE"
+           
                
     
 if __name__ == "__main__":
     overwrite = False
     
     directory = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k"
-    if overwrite:
-        data = "/home/worklab/Documents/derek/3D-playground/_outputs/3D_tracking_results_10_27.csv"
-        #data = "/home/worklab/Documents/derek/3D-playground/_outputs/3D_tracking_results.csv"
-    else:
-        data = "/home/worklab/Documents/derek/3D-playground/working_3D_tracking_data.csv"
         
     try:
         ann.run()
         
     except:
-        ann = Annotator(data,directory,overwrite = overwrite)
+        ann = Annotator(directory)
         ann.run()
     #ann.hg.hg1.plot_test_point([736,12,0],"/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp")
