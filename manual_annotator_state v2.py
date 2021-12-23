@@ -125,7 +125,7 @@ class Annotator():
 
         # get first frames from each camera according to first frame of data
         self.buffer_frame_idx = -1
-        self.buffer_lim = 1000
+        self.buffer_lim = 1500
         self.buffer = []
         
         self.frame_idx = 0
@@ -1303,23 +1303,7 @@ class Annotator():
            elif key == ord("?"):
                self.estimate_ts_bias()
                self.plot_all_trajectories()
-          
-           elif self.active_command == "COPY PASTE" and self.copied_box:
-               nudge = 0.25
-               if key == ord("1"):
-                   self.shift(self.copied_box[0],None,dx = -nudge)
-                   self.plot()
-               if key == ord("5"):
-                   self.shift(self.copied_box[0],None,dy =  nudge)
-                   self.plot()
-               if key == ord("3"):
-                   self.shift(self.copied_box[0],None,dx =  nudge)
-                   self.plot()
-               if key == ord("2"):
-                   self.shift(self.copied_box[0],None,dy = -nudge)
-                   self.plot()
-            
-            
+
            # toggle commands
            elif key == ord("a"):
                self.active_command = "ADD"
@@ -1341,6 +1325,24 @@ class Annotator():
                self.active_command = "HOMOGRAPHY"
            elif key == ord("p"):
                self.active_command = "2D PASTE"
+          
+           elif self.active_command == "COPY PASTE" and self.copied_box:
+               nudge = 0.25
+               if key == ord("1"):
+                   self.shift(self.copied_box[0],None,dx = -nudge)
+                   self.plot()
+               if key == ord("5"):
+                   self.shift(self.copied_box[0],None,dy =  nudge)
+                   self.plot()
+               if key == ord("3"):
+                   self.shift(self.copied_box[0],None,dx =  nudge)
+                   self.plot()
+               if key == ord("2"):
+                   self.shift(self.copied_box[0],None,dy = -nudge)
+                   self.plot()
+            
+            
+           
            
                
     
