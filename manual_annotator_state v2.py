@@ -125,7 +125,7 @@ class Annotator():
 
         # get first frames from each camera according to first frame of data
         self.buffer_frame_idx = -1
-        self.buffer_lim = 700
+        self.buffer_lim = 1000
         self.buffer = []
         
         self.frame_idx = 0
@@ -278,7 +278,7 @@ class Annotator():
                im_boxes = self.hg.state_to_im(boxes,name = camera.name)
                 
                # plot on frame
-               frame = self.hg.plot_state_boxes(frame,boxes,name = camera.name,color = (255,0,0),secondary_color = (0,255,0),thickness = 1)
+               frame = self.hg.plot_state_boxes(frame,boxes,name = camera.name,color = (0,140,255),secondary_color = (0,255,0),thickness = 1)
     
                
                # plot labels
@@ -371,17 +371,20 @@ class Annotator():
         return state_point[:,:2]
     
         
-    def shift(self,obj_idx,box):
+    def shift(self,obj_idx,box, dx = 0, dy = 0):
         
         key = "{}_{}".format(self.clicked_camera,obj_idx)
         item =  self.data[self.frame_idx].get(key)
         if item is not None:
             item["gen"] = "Manual"
         
-        state_box = self.box_to_state(box)
         
-        dx = state_box[1,0] - state_box[0,0]
-        dy = state_box[1,1] - state_box[0,1]
+        
+        if dx == 0 and dy == 0:
+            state_box = self.box_to_state(box)
+            dx = state_box[1,0] - state_box[0,0]
+            dy = state_box[1,1] - state_box[0,1]
+        
         
         if np.abs(dy) > np.abs(dx): # shift y if greater magnitude of change
             # shift y for obj_idx in this and all subsequent frames
@@ -1261,6 +1264,7 @@ class Annotator():
            ### Handle keystrokes 
            
            key = cv2.waitKey(1)
+
            
            if key == ord('9'):
                 self.next()
@@ -1292,7 +1296,7 @@ class Annotator():
                print("Filling buffer...")
                for i in range(self.buffer_lim - 1):
                    self.next()
-                   print("On frame {}".format(self.frame_idx))
+                   #print("On frame {}".format(self.frame_idx))
                self.plot()
                print("Done")
                
@@ -1300,6 +1304,21 @@ class Annotator():
                self.estimate_ts_bias()
                self.plot_all_trajectories()
           
+           elif self.active_command == "COPY PASTE" and self.copied_box:
+               nudge = 0.25
+               if key == ord("1"):
+                   self.shift(self.copied_box[0],None,dx = -nudge)
+                   self.plot()
+               if key == ord("5"):
+                   self.shift(self.copied_box[0],None,dy =  nudge)
+                   self.plot()
+               if key == ord("3"):
+                   self.shift(self.copied_box[0],None,dx =  nudge)
+                   self.plot()
+               if key == ord("2"):
+                   self.shift(self.copied_box[0],None,dy = -nudge)
+                   self.plot()
+            
             
            # toggle commands
            elif key == ord("a"):
