@@ -430,7 +430,7 @@ class Annotator():
         
         search_rad = 50
         grid_size = 11
-        while search_rad > 1:
+        while search_rad > 10:
             x = np.linspace(center[0]-search_rad,center[0]+search_rad,grid_size)
             y = np.linspace(center[1]-search_rad,center[1]+search_rad,grid_size)
             shifts = []
@@ -937,6 +937,7 @@ class Annotator():
             axs[1].set(ylabel='Velocity (ft/s)')
             axs[0].set(ylabel='X-pos (ft)')
 
+            #axs[1].
         
         plt.show()  
         
@@ -1294,7 +1295,7 @@ class Annotator():
                 self.plot()
            elif key == ord("+"):
                print("Filling buffer...")
-               for i in range(self.buffer_lim - 1):
+               for i in range(self.buffer_lim - 1 + 900):
                    self.next()
                    #print("On frame {}".format(self.frame_idx))
                self.plot()
