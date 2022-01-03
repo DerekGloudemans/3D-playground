@@ -430,7 +430,7 @@ class Annotator():
         
         search_rad = 50
         grid_size = 11
-        while search_rad > 10:
+        while search_rad > 1:
             x = np.linspace(center[0]-search_rad,center[0]+search_rad,grid_size)
             y = np.linspace(center[1]-search_rad,center[1]+search_rad,grid_size)
             shifts = []
@@ -458,7 +458,7 @@ class Annotator():
             min_idx = torch.argmin(error)
             center = x[min_idx//grid_size],y[min_idx%grid_size]
             search_rad /= 5
-            print("With search_granularity {}, best error {} at {}".format(search_rad/grid_size,torch.sqrt(error[min_idx]),center))
+            #print("With search_granularity {}, best error {} at {}".format(search_rad/grid_size,torch.sqrt(error[min_idx]),center))
         
         # save box
         base["x"] = self.safe(center[0])
@@ -891,7 +891,7 @@ class Annotator():
                 v = []
                 time = []
                 
-                for frame in range(0,len(self.data)):
+                for frame in range(0,len(self.data),10):
                     key = "{}_{}".format(cam_name,obj_idx)
                     item = self.data[frame].get(key)
                     if item is not None:
@@ -937,7 +937,7 @@ class Annotator():
             axs[1].set(ylabel='Velocity (ft/s)')
             axs[0].set(ylabel='X-pos (ft)')
 
-            #axs[1].
+            axs[1].set_ylim(-150,150)
         
         plt.show()  
         
@@ -1203,10 +1203,7 @@ class Annotator():
                     
                 elif self.active_command == "ADD":
                     # get obj_idx
-                    try:
-                        obj_idx = int(self.keyboard_input())  
-                    except:
-                        obj_idx = self.get_unused_id()
+                    obj_idx = self.get_unused_id()
                     self.add(obj_idx,self.new)
                 
                 # Shift object
