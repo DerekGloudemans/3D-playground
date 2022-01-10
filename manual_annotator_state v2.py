@@ -4,13 +4,13 @@ import cv2
 import csv
 import copy
 import sys
-import argparse
 import string
 import cv2 as cv
 import re
 import torch
 import matplotlib.pyplot as plt
 import _pickle as pickle 
+import time
 
 from homography import Homography,Homography_Wrapper
 from datareader import Data_Reader, Camera_Wrapper
@@ -150,6 +150,8 @@ class Annotator():
         cp = torch.load(loc_cp)
         self.detector.load_state_dict(cp) 
         self.detector.cuda()
+        
+        self.toggle_auto = True
         self.AUTO = True
         
         self.stride = 20
@@ -186,8 +188,9 @@ class Annotator():
         if self.active_cam + dir < len(self.seq_keys) -1 and self.active_cam + dir >= 0:
             self.active_cam += dir
             self.plot()
-            
-        self.AUTO = True
+       
+        if self.toggle_auto:
+            self.AUTO = True
         
         if self.cameras[self.active_cam].name in ["p1c3","p1c4","p2c3","p2c4","p3c3","p3c4"]:
             self.stride = 10
@@ -220,13 +223,17 @@ class Annotator():
         
         self.buffer.append(frames)
         if len(self.buffer) > self.buffer_lim:
-            self.buffer = self.buffer[1:]
+            #self.buffer = self.buffer[1:]
+            del self.buffer[0]
             
     def next(self):
         """
         Advance a "frame"
         """        
-        self.AUTO = True
+        self.label_buffer = None
+        
+        if self.toggle_auto:
+            self.AUTO = True
 
         if self.frame_idx < len(self.data):
             self.frame_idx += 1
@@ -246,7 +253,10 @@ class Annotator():
     
     
     def prev(self):
-        self.AUTO = True
+        self.label_buffer = None
+        
+        if self.toggle_auto:
+            self.AUTO = True
 
         
         if self.frame_idx > 0 and self.buffer_frame_idx > -self.buffer_lim:
@@ -569,7 +579,7 @@ class Annotator():
         return max_box
         
     
-    def dimension(self,obj_idx,box):
+    def dimension(self,obj_idx,box, dx = 0, dy = 0):
         """
         Adjust relevant dimension in all frames based on input box. Relevant dimension
         is selected based on:
@@ -584,10 +594,13 @@ class Annotator():
         if item is not None:
             item["gen"] = "Manual"
         
-        state_box = self.box_to_state(box)
-        dx = state_box[1,0] - state_box[0,0]
-        dy = state_box[1,1] - state_box[0,1]
-        dh = -(box[3] - box[1]) * 0.02 # we say that 50 pixels in y direction = 1 foot of change
+        if dx == 0 and dy == 0:
+            state_box = self.box_to_state(box)
+            dx = state_box[1,0] - state_box[0,0]
+            dy = state_box[1,1] - state_box[0,1]
+            dh = -(box[3] - box[1]) * 0.02 # we say that 50 pixels in y direction = 1 foot of change
+        else:
+            dh = dy
         
         key = "{}_{}".format(self.clicked_camera,obj_idx)
         
@@ -642,11 +655,13 @@ class Annotator():
             
         
         else: # paste the copied box
+            start = time.time()
             state_point = self.box_to_state(point)[0]
             
             obj_idx = self.copied_box[0]
             new_obj = copy.deepcopy(self.copied_box[1])
-            
+
+
             dx = state_point[0] - self.copied_box[2][0] 
             dy = state_point[1] - self.copied_box[2][1] 
             new_obj["x"] += dx
@@ -658,17 +673,18 @@ class Annotator():
             new_obj["gen"] = "Manual"
             
             # remove existing box if there is one
-            del_idx = -1
             key = "{}_{}".format(self.clicked_camera,obj_idx)
-            obj =  self.data[self.frame_idx].get(key)
-            if obj is not None:
-                del self.data[self.frame_idx][key]
+            # obj =  self.data[self.frame_idx].get(key)
+            # if obj is not None:
+            #     del self.data[self.frame_idx][key]
                 
             self.data[self.frame_idx][key] = new_obj
             
             if self.AUTO:
                 self.automate(obj_idx)
                 self.AUTO = False
+            
+
             
     def interpolate(self,obj_idx):
         
@@ -866,7 +882,7 @@ class Annotator():
     
     def undo(self):
         if self.label_buffer is not None:
-            self.data = self.label_buffer
+            self.data[self.frame_idx] = self.label_buffer
             self.label_buffer = None
             self.plot()
         else:
@@ -1189,8 +1205,8 @@ class Annotator():
            ### handle click actions
            
            if self.new is not None:
-               # buffer one change
-                self.label_buffer = copy.deepcopy(self.data)
+                # buffer one change
+                self.label_buffer = copy.deepcopy(self.data[self.frame_idx])
                 
                 # Add and delete objects
                 if self.active_command == "DELETE":
@@ -1218,7 +1234,7 @@ class Annotator():
                    
                 # copy and paste a box across frames
                 elif self.active_command == "COPY PASTE":
-                    self.copy_paste( self.new)
+                    self.copy_paste(self.new)
                     
                 # interpolate between copy-pasted frames
                 elif self.active_command == "INTERPOLATE":
@@ -1245,8 +1261,8 @@ class Annotator():
                 elif self.active_command == "2D PASTE":
                     self.paste_in_2D_bbox(self.new)
                     
-                
                 self.plot()
+
                 self.new = None   
                 
 
@@ -1260,7 +1276,6 @@ class Annotator():
            
            
            ### Handle keystrokes 
-           
            key = cv2.waitKey(1)
 
            
@@ -1275,7 +1290,9 @@ class Annotator():
            elif key == ord("w"):
                self.save2()
                self.plot_all_trajectories()
-
+           elif key == ord("@"):
+               self.toggle_auto = not(self.toggle_auto)
+               print("Automatic box pasting: {}".format(self.toggle_auto))
                
            elif key == ord("["):
                self.toggle_cams(-1)
@@ -1291,10 +1308,11 @@ class Annotator():
                 [self.next() for i in range(self.stride)]
                 self.plot()
            elif key == ord("+"):
-               print("Filling buffer...")
-               for i in range(self.buffer_lim - 1 + 900):
+               print("Filling buffer. Type number of frames to buffer...")
+               n = int(self.keyboard_input())  
+               for i in range(n):
                    self.next()
-                   #print("On frame {}".format(self.frame_idx))
+                   if i% 100 == 0: print("On frame {}".format(self.frame_idx))
                self.plot()
                print("Done")
                
@@ -1339,7 +1357,20 @@ class Annotator():
                    self.shift(self.copied_box[0],None,dy = -nudge)
                    self.plot()
             
-            
+           elif self.active_command == "DIMENSION" and self.copied_box:
+               nudge = 0.1
+               if key == ord("1"):
+                   self.dimension(self.copied_box[0],None,dx = -nudge*2)
+                   self.plot()
+               if key == ord("5"):
+                   self.dimension(self.copied_box[0],None,dy =  nudge)
+                   self.plot()
+               if key == ord("3"):
+                   self.dimension(self.copied_box[0],None,dx =  nudge*2)
+                   self.plot()
+               if key == ord("2"):
+                   self.dimension(self.copied_box[0],None,dy = -nudge)
+                   self.plot() 
            
            
                
