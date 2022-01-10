@@ -5,9 +5,9 @@
 - `[` and `]` - cycle through camera views
 - `q` - save and quit. Don't press this after you've buffered frames, or you'll have to re-buffer. Best to just leave the labeler running
 - `w` - save and don't quit.
-- `u` - undo the last labeling change. Only can undo one change at a time so be careful
+- `u` - undo the last labeling change. Only can undo one change at a time so be careful, and if you change frames, you can no longer undo.
 - `a` - click a vehicle and then press enter to create a new box (with a new unique ID)
-- `r` - click a vehicle and then press enter to delete that vehicle in all frames (BE CAREFUL AND PROBABLY DON'T USE THIS)
+- `r` - click a vehicle and then press enter to delete that vehicle in all subsequent frames for a given camera view (BE CAREFUL AND PROBABLY DON'T USE THIS)
 - `s` - Click on a box and drag it either along the lanes or perpendicular to the lanes to shift its position in the x/y direction
 - `d` - Click on a box and drag it in the length/width/height direction to change the vehicle's dimension. Note this change is reflected across all boxes for that object. To adjust height, right click until an "R" appears on the top header, and likewise right click until it disappears to move back to adjusting length/width.
 - `c` - The first time you click a box, copies that box (I try and always click on the back bottom left of the vehicle). Each subsequent time you click on a vehicle, the box is pasted at the clicked location. Used to copy a box for a vehicle from one frame to others.
