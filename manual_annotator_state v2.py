@@ -54,7 +54,7 @@ class Annotator():
     """
     
     
-    def __init__(self,sequence_directory):
+    def __init__(self,sequence_directory,scene_id = -1):
         
         
         # # get data
@@ -73,12 +73,12 @@ class Annotator():
         # self.data = new_data
         
        
-
+        self.scene_id = scene_id
         
         # get sequences
         self.sequences = {}
         for sequence in os.listdir(sequence_directory):    
-            if "_0" in sequence and "p3c6" not in sequence: 
+            if True: #"_0" in sequence and "p3c6" not in sequence: 
                 cap = Camera_Wrapper(os.path.join(sequence_directory,sequence))
                 self.sequences[cap.name] = cap
         
@@ -125,7 +125,7 @@ class Annotator():
 
         # get first frames from each camera according to first frame of data
         self.buffer_frame_idx = -1
-        self.buffer_lim = 1500
+        self.buffer_lim = 1900
         self.buffer = []
         
         self.frame_idx = 0
@@ -745,6 +745,11 @@ class Annotator():
         print("Interpolated boxes for object {}".format(obj_idx))
         
     def correct_homography_Z(self,box):
+        dx = self.safe(box[2]-box[0]) 
+        if dx > 500:
+            sign = -1
+        else:
+            sign = 1
         # get dy in image space
         dy = self.safe(box[3] - box[1])
         delta = 10**(dy/1000.0)
@@ -752,9 +757,9 @@ class Annotator():
         direction = 1 if self.box_to_state(box)[0,1] < 60 else -1
         
         if direction == 1:
-            self.hg.hg1.correspondence[self.clicked_camera]["P"][:,2] *= delta
+            self.hg.hg1.correspondence[self.clicked_camera]["P"][:,2] *= sign*delta
         else:   
-            self.hg.hg2.correspondence[self.clicked_camera]["P"][:,2] *= delta
+            self.hg.hg2.correspondence[self.clicked_camera]["P"][:,2] *= sign*delta
         
     def correct_time_bias(self,box):
         
@@ -957,6 +962,87 @@ class Annotator():
         
         plt.show()  
         
+        
+        # plt.figure(figsize = (24,24))
+        # for i in range(len(all_x)):
+        #     cidx = all_ids[i]
+        #     plt.plot(all_x[i],all_y[i],color = colors[cidx])
+        # plt.xlabel("X position (ft)",fontsize = 24)
+        # plt.ylabel("Y position (ft)",fontsize = 24)
+        # plt.xlim([0,1750])
+        # plt.ylim(0,120)
+        # plt.show()
+        
+    
+    # def plot_agg_velocity(self):
+    #     all_x = []
+    #     all_v = []
+    #     all_time = []
+    #     all_ids = []
+        
+    #     t0 = min(list(self.all_ts[0].values()))
+        
+
+        
+    #     for obj_idx in range(self.get_unused_id()):
+    #         x = []
+    #         y = []
+    #         v = []
+    #         time = []
+            
+    #         for cam_idx, camera in enumerate(self.cameras):
+    #             cam_name = camera.name
+            
+    #             for frame in range(0,len(self.data),10):
+    #                 key = "{}_{}".format(cam_name,obj_idx)
+    #                 item = self.data[frame].get(key)
+    #                 if item is not None:
+    #                     x.append(self.safe(item["x"]))
+    #                     y.append(self.safe(item["y"]))
+    #                     time.append(self.safe(item["timestamp"]) + self.ts_bias[cam_idx])
+                            
+           
+            
+            
+            
+    #         if len(time) > 1:
+    #             time = [item - t0 for item in time]
+                
+    #             x = [x_val for _, x_val in sorted(zip(time,x), key=lambda pair: pair[0])]
+    #             time.sort()
+                
+    #             if len(x) > 15:
+    #                 x = np.convolve(np.array(x),np.hamming(15),mode = "same")
+    #             elif len(x) > 9:
+    #                 x = np.convolve(np.array(x),np.hamming(9),mode = "same")
+                
+
+                    
+    #             # finite difference velocity estimation
+    #             v = [(x[i] - x[i-1]) / (time[i] - time[i-1] + 1e-08) for i in range(1,len(x))] 
+    #             v += [v[-1]]
+                
+    #             for i,val in enumerate(v):
+    #                 if np.abs(val) > 200:
+    #                     v[i] = v[i-1]
+                
+                
+    #             all_time.append(time)
+    #             all_v.append(v)
+    #             all_x.append(x)
+    #             all_ids.append(obj_idx)
+        
+    #     plt.figure(figsize = (20,10))
+    #     for i in range(len(all_x)):
+    #        plt.plot(all_time[i],all_v[i],color = self.colors[i])#/(i%1+1))
+        
+    #     plt.ylabel('Velocity (ft/s)')
+    #     plt.xlabel("Time (s)")
+    #     plt.ylim([-150,150])
+        
+    #     plt.show()  
+        
+    
     def estimate_ts_bias(self):
         """
         Moving sequentially through the cameras, estimate ts_bias of camera n
@@ -1019,13 +1105,13 @@ class Annotator():
                         # estimate time at which cam object was at point
                         for i in range(1,len(c1x)):
                             if (c1x[i] - point) *  (c1x[i-1]- point) <= 0:
-                                ratio = (point-c1x[i-1])/ (c1x[i]-c1x[i-1])
+                                ratio = (point-c1x[i-1])/ (c1x[i]-c1x[i-1]+ 1e-08)
                                 time = c1t[i-1] + (c1t[i] - c1t[i-1])*ratio
                         
                         # estimate time at which prev_cam object was at point
                         for j in range(1,len(c0x)):
                             if (c0x[j] - point) *  (c0x[j-1]- point) <= 0:
-                                ratio = (point-c0x[j-1])/ (c0x[j]-c0x[j-1])
+                                ratio = (point-c0x[j-1])/ (c0x[j]-c0x[j-1] + 1e-08)
                                 prev_time = c0t[j-1] + (c0t[j] - c0t[j-1])*ratio
                         
                         # relative to previous camera, cam time is diff later when object is at same location
@@ -1049,14 +1135,14 @@ class Annotator():
                 print("No matching points for cameras {} and {}".format(cam,prev_cam))
     
     def save2(self):
-        with open("labeler_cache.cpkl","wb") as f:
+        with open("labeler_cache_sequence_{}.cpkl".format(self.scene_id),"wb") as f:
             data = [self.data,self.all_ts,self.ts_bias,self.hg]
             pickle.dump(data,f)
             print("Saved labels")
             self.count()
     
     def reload(self):
-         with open("labeler_cache.cpkl","rb") as f:
+         with open("labeler_cache_sequence_{}.cpkl".format(self.scene_id),"rb") as f:
             self.data,self.all_ts,self.ts_bias,self.hg = pickle.load(f)
     
     def save(self):
@@ -1377,13 +1463,16 @@ class Annotator():
     
 if __name__ == "__main__":
     overwrite = False
-    
+    scene_id = 4
     directory = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k"
+    directory = "/home/worklab/Data/dataset_beta/sequence_{}".format(scene_id)
         
     try:
         ann.run()
         
     except:
-        ann = Annotator(directory)
+        ann = Annotator(directory,scene_id = scene_id)
+        #ann.estimate_ts_bias()
+        #ann.plot_all_trajectories()
         ann.run()
     #ann.hg.hg1.plot_test_point([736,12,0],"/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp")

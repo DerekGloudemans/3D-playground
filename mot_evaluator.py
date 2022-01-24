@@ -48,7 +48,7 @@ class MOT_Evaluator():
         
         # create dict for storing metrics
         n_classes = len(self.hg.class_heights.keys())
-        class_confusion_matrix = np.zeros([n_classes,n_classes])
+        class_confusion_matrix = np.zeros([n_classes,n_classes]).astype(int)
         self.m = {
             "FP":0,
             "FP edge-case":0,
@@ -257,13 +257,20 @@ class MOT_Evaluator():
                 pred_im_matched = pred_im[pred_im_matched_idxs]
                 gt_im_matched   = gt_im[gt_im_matched_idxs]
                 
-                self.hg.plot_boxes(im, pred_im_matched, color = (255,0,0)) # blue # ground truth box
-                self.hg.plot_boxes(im,gt_im_matched,color = (0,255,0))     # green # predicted box
+                # self.hg.plot_boxes(im, pred_im_matched, color = (255,0,0)) # blue # ground truth box
+                # self.hg.plot_boxes(im,gt_im_matched,color = (0,255,0))     # green # predicted box
                 
-                self.hg.plot_boxes(im, gt_im_unmatched,color = (0,0,255),thickness =2)     # red, FN
-                self.hg.plot_boxes(im, pred_im_unmatched,color = (0,100,255),thickness =2) # orange, FP
+                # self.hg.plot_boxes(im, gt_im_unmatched,color = (0,0,255),thickness =2)     # red, FN
+                # self.hg.plot_boxes(im, pred_im_unmatched,color = (0,100,255),thickness =2) # orange, FP
+                
+                self.hg.plot_boxes(im,gt_im,color = (100,100,100),thickness = 2)
+                self.hg.plot_boxes(im,gt_im,color = (255,255,255),thickness = 1)
+
+                
+                self.hg.plot_boxes(im,pred_im,color = (0,170,255),thickness = 2)
 
                 cv2.imshow("frame",im)
+                cv2.imwrite("track_ims/temp/{}.png".format(str(f_idx).zfill(5)),im)
                 
                 key = cv2.waitKey(1)
                 if key == ord("p"):
@@ -305,9 +312,12 @@ class MOT_Evaluator():
             # for each match, store whether the class was predicted correctly or incorrectly, on a per class basis
             # index matrix by [true class,pred class]
             for match in matches:
-                cls_string = gt_classes[match[0]]
-                gt_cls = self.hg.class_dict[cls_string]
-                cls_string = pred_classes[match[1]]
+                try:
+                    cls_string = gt_classes[match[0]]
+                    gt_cls = self.hg.class_dict[cls_string]
+                    cls_string = pred_classes[match[1]]
+                except:
+                    gt_cls = 5
                 try:
                     pred_cls = self.hg.class_dict[cls_string]
                 except:
@@ -398,6 +408,7 @@ class MOT_Evaluator():
         metrics["Top im precision"]    = top_mean_stddev
         
         self.metrics = metrics
+        self.confusion = self.m["cls"]
         self.print_metrics()
         
     def print_metrics(self):
@@ -409,12 +420,16 @@ class MOT_Evaluator():
                 print("{:<30}: {:.2f}{} avg., {:.2f}{} st.dev.".format(name,self.metrics[name][0],unit,self.metrics[name][1],unit))
             except:
                 print("{:<30}: {:.3f}".format(name,self.metrics[name]))
+                
+                
+        print("Class confusion matrix:")
+        print(self.confusion)
             
     
 
 if __name__ == "__main__":
     
-    camera_name = "p1c2"
+    camera_name = "p1c3"
     sequence_idx = 0
     
     pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/{}_{}_3D_track_outputs.csv".format(camera_name,sequence_idx)

@@ -194,11 +194,12 @@ class KIOU_Tracker():
                 
                 self.next_obj_id += 1
                 cur_row += 1
-        if len(new_array) > 0:      
+        if len(new_array) > 0:     
+            times = np.ones(len(new_directions)) * self.frame_num / 30.0
             if mean_object_sizes:
-                self.filter.add(new_array,new_ids,new_directions,init_speed = True,classes = new_classes)
+                self.filter.add(new_array,new_ids,new_directions,times,init_speed = True,classes = new_classes)
             else:
-                self.filter.add(new_array,new_ids,new_directions,init_speed = True)
+                self.filter.add(new_array,new_ids,new_directions,times,init_speed = True)
         
         # 3. For each untracked object, increment fsld        
         for i in range(len(pre_ids)):
@@ -232,12 +233,9 @@ class KIOU_Tracker():
         
         if self.iou_cutoff > 0:
             removals = []
-            objs = self.filter.objs(with_direction = True)
-            if len(objs) == 0:
+            ids,boxes = self.filter.objs(with_direction = True)
+            if len(boxes) == 0:
                 return
-            
-            idxs = [key for key in objs]
-            boxes = torch.from_numpy(np.stack([objs[key] for key in objs]))
             boxes = self.hg.state_to_space(boxes)
             
             
@@ -248,16 +246,16 @@ class KIOU_Tracker():
             boxes_new[:,1] = torch.min(boxes[:,0:4,1],dim = 1)[0]
             boxes_new[:,3] = torch.max(boxes[:,0:4,1],dim = 1)[0]
             
-            for i in range(len(idxs)):
-                for j in range(len(idxs)):
+            for i in range(len(ids)):
+                for j in range(len(ids)):
                     if i != j:
                         iou_metric = self.iou(boxes_new[i],boxes_new[j])
                         if iou_metric > self.iou_cutoff:
                             # determine which object has been around longer
                             if len(self.all_classes[i]) > len(self.all_classes[j]):
-                                removals.append(idxs[j])
+                                removals.append(ids[j])
                             else:
-                                removals.append(idxs[i])
+                                removals.append(ids[i])
             if len(removals) > 0:
                 removals = list(set(removals))
                 self.filter.remove(removals)
@@ -268,26 +266,21 @@ class KIOU_Tracker():
         Removes all objects with negative size or size greater than max_size
         """
         removals = []
-        objs = self.filter.objs(with_direction = True)
-        for i in objs:
-            obj = objs[i]
+        keys,objs = self.filter.objs(with_direction = True)
+        for i,obj in enumerate(objs):
             if obj[1] > 120 or obj [1] < -10:
-                removals.append(i)
+                removals.append(keys[i])
             elif obj[2] > max_sizes[0] or obj[2] < 0 or obj[3] > max_sizes[1] or obj[3] < 0 or obj[4] > max_sizes[2] or obj[4] < 0:
-                removals.append(i)
+                removals.append(keys[i])
             elif obj[5] > 150 or obj[5] < -150:
-                removals.append(i)      
+                removals.append(keys[i])      
         
         # remove boxes outside of frame
-        keys = list(objs.keys())
-        if len(keys) ==0:
+        if len(keys) == 0:
             return
-        objs_new = [objs[id] for id in keys]
-        objs_new = torch.from_numpy(np.stack(objs_new))
-        objs_new = self.hg.state_to_im(objs_new)
+        objs_new = self.hg.state_to_im(objs)
         
-        for i in range(len(keys)):
-            obj = objs_new[i]
+        for i ,obj in enumerate(objs_new):
             if obj[0,0] < 0 and obj[2,0] < 0 or obj[0,0] > 1920 and obj[2,0] > 1920:
                 removals.append(keys[i])
             if obj[0,1] < 0 and obj[2,1] < 0 or obj[0,1] > 1080 and obj[2,1] > 1080:
@@ -636,8 +629,7 @@ class KIOU_Tracker():
         """
         
         # get classes for each object
-        objs = self.filter.objs()
-        ids = list(objs.keys())
+        ids,_ = self.filter.objs()
         classes = [np.argmax(self.all_classes[id]) for id in ids]
         
         # get expected dimensions for each object
@@ -664,26 +656,19 @@ class KIOU_Tracker():
         """    
         
         self.start_time = time.time()
-        frame_num, (frame,dim,original_im) = next(self.loader)            
+        frame_num, frame,dim,original_im = next(self.loader)            
 
         while frame_num != -1:            
+            self.frame_num = frame_num 
             
             # predict next object locations
             start = time.time()
             try: # in the case that there are no active objects will throw exception
                 self.filter.predict()
-                pre_locations = self.filter.objs(with_direction = True)
             except:
-                pre_locations = []    
-                
-            pre_ids = []
-            pre_loc = []
-            for id in pre_locations:
-                pre_ids.append(id)
-                pre_loc.append(pre_locations[id])
-            pre_loc = np.array(pre_loc)  
-            pre_loc = torch.from_numpy(pre_loc)
+                pass
             
+            pre_ids,pre_loc = self.filter.objs(with_direction = True)
             self.time_metrics['predict'] += time.time() - start
         
             
@@ -735,13 +720,10 @@ class KIOU_Tracker():
                 
             # get all object locations and store in output dict
             start = time.time()
-            try:
-                post_locations = self.filter.objs(with_direction = True)
-            except:
-                post_locations = {}
-            for id in post_locations:
+            ids,post_locations = self.filter.objs(with_direction = True)
+            for i in range(len(post_locations)):
                 try:
-                   self.all_tracks[id][frame_num,:] = post_locations[id][:self.state_size]   
+                   self.all_tracks[ids[i]][frame_num,:] = post_locations[i][:self.state_size]   
                 except IndexError:
                     print("Index Error")
             self.time_metrics['store'] += time.time() - start  
@@ -755,7 +737,7 @@ class KIOU_Tracker():
        
             # load next frame  
             start = time.time()
-            frame_num ,(frame,dim,original_im) = next(self.loader) 
+            frame_num,frame,dim,original_im = next(self.loader) 
             torch.cuda.synchronize()
             self.time_metrics["load"] = time.time() - start
             torch.cuda.empty_cache()
@@ -957,10 +939,11 @@ def im_to_vid(directory,name = "video"):
 if __name__ == "__main__": 
     #%% Set parameters
     all_metrics = []
+    all_confusion = []
     
-    for camera_name in ["p1c1","p1c2","p1c3","p1c4","p1c5","p1c6"]:
+    for camera_name in ["p1c2","p1c3","p1c4","p1c5","p2c2","p2c3","p2c4","p2c5","p3c2","p3c3"]:
         print(camera_name)
-        EVAL = False
+        EVAL = True
         SHOW = False
         #camera_name = "p1c4"
         s_idx = "0"
@@ -1001,21 +984,21 @@ if __name__ == "__main__":
         benchmark_frame = {
         "p1c1_0":-1,
         "p1c2_0":1000,
-        "p1c3_0":1000,
-        "p1c4_0":1000,
+        "p1c3_0":2340,
+        "p1c4_0":8999,
         "p1c5_0":1000,
-        "p1c6_0":-1,
+        "p1c6_0":320,
         
         "p2c1_0":230,
-        "p2c2_0":-1,
-        "p2c3_0":-1,
-        "p2c4_0":-1,
-        "p2c5_0":-1,
+        "p2c2_0":215,
+        "p2c3_0":500,
+        "p2c4_0":405,
+        "p2c5_0":680,
         "p2c6_0":300,
         
-        "p3c1_0":-1,
-        "p3c2_0":-1,
-        "p3c3_0":-1,
+        "p3c1_0":200,
+        "p3c2_0":200,
+        "p3c3_0":300,
         "p3c4_0":-1,
         "p3c5_0":-1,
         "p3c6_0":-1
@@ -1118,7 +1101,7 @@ if __name__ == "__main__":
         #%% Run tracker
         pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/{}_{}_3D_track_outputs.csv".format(camera_name,s_idx)
         cutoff_frame = benchmark_frame["{}_{}".format(camera_name,s_idx)]
-        cutoff_frame = 9000
+        
         
         if not os.path.exists(pred_path):
             print("Tracking sequence {}".format(sequence))
@@ -1145,7 +1128,7 @@ if __name__ == "__main__":
             ev = MOT_Evaluator(gt_path,pred_path,hg,params = params)
             ev.evaluate()
             all_metrics.append(ev.metrics)
-           
+            all_confusion.append(ev.confusion)
         
             
     if EVAL:
@@ -1173,4 +1156,7 @@ if __name__ == "__main__":
                     running_total += sequence[metric]
                 running_total  /= len(all_metrics)
                 print("{:<30}: {:.3f}".format(metric,running_total))
+        print("Total confusion matrix:")
+        conf_total = sum(all_confusion)
+        print(conf_total)
                 

@@ -23,7 +23,7 @@ from util_track.mp_loader import FrameLoader
 from util_track.kf import Torch_KF
 from util_track.mp_writer import OutputWriter
 from homography import Homography,Homography_Wrapper, load_i24_csv
-#from mot_evaluator import MOT_Evaluator
+from mot_evaluator import MOT_Evaluator
 
 
 
@@ -1630,11 +1630,23 @@ if __name__ == "__main__":
     
     #%% Run tracker
     pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/temp_3D_track_outputs.csv"
-    cutoff_frame = 9000
+    cutoff_frame = 1000
     OUT = "track_ims"
     
     tracker = MC_Crop_Tracker(sequences,detector,kf_params,hg,class_dict, params = params, OUT = OUT,PLOT = False,early_cutoff = cutoff_frame,cd = crop_detector)
     tracker.track()
     tracker.write_results_csv()
     
+    if True:
+        ev_params = {
+            "cutoff_frame": cutoff_frame,
+            "match_iou":0.5,
+            "sequence":None#sequence
+            }    
+        
+        pred_path = "/home/worklab/Documents/derek/3D-playground/_outputs/3D_tracking_results.csv"
+        gt_path = "/home/worklab/Data/dataset_alpha/manual_correction/rectified_{}_0_track_outputs_3D.csv".format(camera_id)
+        ev = MOT_Evaluator(gt_path,pred_path,hg,params = ev_params)
+        ev.evaluate()
+        print(ev.metrics)
     		

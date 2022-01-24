@@ -30,10 +30,19 @@ class Camera_Wrapper():
         self.cap = cv2.VideoCapture(sequence)
         self.ds = ds
         
-        checksum_path="/home/worklab/Documents/derek/I24-video-processing/I24-video-ingest/resources/timestamp_pixel_checksum_6.pkl"
-        geom_path="/home/worklab/Documents/derek/I24-video-processing/I24-video-ingest/resources/timestamp_geometry_4K.pkl"
+        #checksum_path="/home/worklab/Documents/derek/I24-video-processing/I24-video-ingest/resources/timestamp_pixel_checksum_6.pkl"
+        #geom_path="/home/worklab/Documents/derek/I24-video-processing/I24-video-ingest/resources/timestamp_geometry_4K.pkl"
+        
+        checksum_path="/home/worklab/Documents/derek/test-scripts/ts/timestamp_pixel_checksum_6_h18.pkl"
+        geom_path="/home/worklab/Documents/derek/test-scripts/ts/ts_geom_h18.pkl"
+        
+        checksum_path2="/home/worklab/Documents/derek/test-scripts/ts/timestamp_pixel_checksum_6_h12.pkl"
+        geom_path2="/home/worklab/Documents/derek/test-scripts/ts/ts_geom_h12.pkl"
+        
         self.checksums = tsu.get_precomputed_checksums(checksum_path)
         self.geom = tsu.get_timestamp_geometry(geom_path)
+        self.checksums2 = tsu.get_precomputed_checksums(checksum_path2)
+        self.geom2 = tsu.get_timestamp_geometry(geom_path2)
         
         self.frame = None
         self.ts = None
@@ -46,10 +55,15 @@ class Camera_Wrapper():
     def __next__(self):
         last_ts = self.ts
         ret,self.frame = self.cap.read()
-        self.ts = tsu.parse_frame_timestamp(frame_pixels = self.frame, timestamp_geometry = self.geom, precomputed_checksums = self.checksums)[0]
         
+        # try both timestamp geometries
+        self.ts = tsu.parse_frame_timestamp(frame_pixels = self.frame, timestamp_geometry = self.geom, precomputed_checksums = self.checksums)[0]
         if self.ts is None:
-            self.ts = last_ts + 1/30.0
+            self.ts = tsu.parse_frame_timestamp(frame_pixels = self.frame, timestamp_geometry = self.geom2, precomputed_checksums = self.checksums2)[0]
+            
+            if self.ts is None:
+                self.ts = last_ts + 1/30.0
+                print("No timestamp parsed: {}".format(self.name))
         
         self.all_ts.append(self.ts)
 

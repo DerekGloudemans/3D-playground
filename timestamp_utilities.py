@@ -92,6 +92,10 @@ def parse_frame_timestamp(timestamp_geometry, precomputed_checksums, frame_pixel
 
         # extract the digit for this index, was already cropped x0:x0+n*w, y0:y0+h
         pixels = tsmask[:, j*w:(j+1)*w]
+        
+        # cv2.imshow("pixels",pixels)
+        # cv2.waitKey(0)
+        
         # compute the 6-area checksum and convert it to an array
         cs = [[int(pixels[:h13, :w12].sum() / 255), int(pixels[:h13, w12:].sum() / 255)],
               [int(pixels[h13:h23, :w12].sum() / 255), int(pixels[h13:h23, w12:].sum() / 255)],
