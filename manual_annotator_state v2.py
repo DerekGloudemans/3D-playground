@@ -54,7 +54,7 @@ class Annotator():
     """
     
     
-    def __init__(self,sequence_directory,scene_id = -1):
+    def __init__(self,sequence_directory,scene_id = -1, homography_id = 1):
         
         
         # # get data
@@ -83,7 +83,12 @@ class Annotator():
                 self.sequences[cap.name] = cap
         
         # get homography
-        self.hg  = Homography_Wrapper()
+        hid = "" if homography_id == 1 else "2"
+        with open("EB_homography{}.cpkl".format(hid),"rb") as f:
+            hg1 = pickle.load(f) 
+        with open("WB_homography{}.cpkl".format(hid),"rb") as f:
+            hg2 = pickle.load(f) 
+        self.hg  = Homography_Wrapper(hg1=hg1,hg2=hg2)
 
         
         # sorted sequence list
@@ -125,7 +130,8 @@ class Annotator():
 
         # get first frames from each camera according to first frame of data
         self.buffer_frame_idx = -1
-        self.buffer_lim = 1900
+        self.buffer_lim = 2000
+        self.last_frame = 1801
         self.buffer = []
         
         self.frame_idx = 0
@@ -235,7 +241,7 @@ class Annotator():
         if self.toggle_auto:
             self.AUTO = True
 
-        if self.frame_idx < len(self.data):
+        if self.frame_idx < len(self.data) and self.frame_idx < self.last_frame:
             self.frame_idx += 1
             
             
@@ -900,6 +906,7 @@ class Annotator():
         all_v = []
         all_time = []
         all_ids = []
+        all_lengths = []
         
         t0 = min(list(self.all_ts[0].values()))
         
@@ -919,7 +926,7 @@ class Annotator():
                         x.append(self.safe(item["x"]))
                         y.append(self.safe(item["y"]))
                         time.append(self.safe(item["timestamp"]) + self.ts_bias[cam_idx])
-                            
+                        length = item["l"]
                
                 
                 
@@ -937,6 +944,7 @@ class Annotator():
                     all_x.append(x)
                     all_y.append(y)
                     all_ids.append(obj_idx)
+                    all_lengths.append(length)
         
         fig, axs = plt.subplots(3,sharex = True,figsize = (24,18))
         colors = self.colors
@@ -953,6 +961,9 @@ class Annotator():
             axs[0].plot(all_time[i],all_x[i],color = colors[cidx])#/(i%1+1))
             axs[1].plot(all_time[i],all_v[i],color = colors[cidx])#/(i%3+1))
             axs[2].plot(all_time[i],all_y[i],color = colors[cidx])#/(i%3+1))
+            
+            all_x2 = [all_lengths[i] + item for item in all_x[i]]
+            axs[0].fill_between(all_time[i],all_x[i],all_x2,color = colors[cidx])
             
             axs[2].set(xlabel='time(s)', ylabel='Y-pos (ft)')
             axs[1].set(ylabel='Velocity (ft/s)')
@@ -1042,6 +1053,90 @@ class Annotator():
         
     #     plt.show()  
         
+    def plot_one_lane(self,lane = (70,85)):
+        all_x = []
+        all_y = []
+        all_v = []
+        all_time = []
+        all_ids = []
+        all_lengths = []
+        
+        t0 = min(list(self.all_ts[0].values()))
+        
+        for cam_idx, camera in enumerate(self.cameras):
+            cam_name = camera.name
+        
+            for obj_idx in range(self.get_unused_id()):
+                x = []
+                y = []
+                v = []
+                time = []
+                
+                for frame in range(0,len(self.data),10):
+                    key = "{}_{}".format(cam_name,obj_idx)
+                    item = self.data[frame].get(key)
+                    if item is not None:
+                        
+                        y_test = self.safe(item["y"])
+                        if y_test > lane[0] and y_test < lane[1]:
+                            x.append(self.safe(item["x"]))
+                            y.append(self.safe(item["y"]))
+                            time.append(self.safe(item["timestamp"]) + self.ts_bias[cam_idx])
+                            length = item["l"]
+               
+                
+                
+                
+                if len(time) > 1:
+                    time = [item - t0 for item in time]
+
+                    # finite difference velocity estimation
+                    v = [(x[i] - x[i-1]) / (time[i] - time[i-1] + 1e-08) for i in range(1,len(x))] 
+                    v += [v[-1]]
+                    
+                   
+                    
+                    all_time.append(time)
+                    all_v.append(v)
+                    all_x.append(x)
+                    all_y.append(y)
+                    all_ids.append(obj_idx)
+                    all_lengths.append(length)
+        
+        fig, axs = plt.subplots(2,sharex = True,figsize = (24,18))
+        colors = self.colors
+        
+        for i in range(len(all_v)):
+            
+            
+            cidx = all_ids[i]
+            mk = ["s","D","o"][i%3]
+            
+            # axs[0].scatter(all_time[i],all_x[i],c = colors[cidx:cidx+1]/(i%3+1),marker = mk)
+            # axs[1].scatter(all_time[i],all_v[i],c = colors[cidx:cidx+1]/(i%3+1),marker = mk)
+            # axs[2].scatter(all_time[i],all_y[i],c = colors[cidx:cidx+1]/(i%3+1),marker = mk)
+            
+            axs[0].plot(all_time[i],all_x[i],color = colors[cidx])#/(i%1+1))
+            try:
+                v = np.convolve(v,np.hamming(15),mode = "same")
+                axs[1].plot(all_time[i],all_v[i],color = colors[cidx])#/(i%3+1))
+
+            except:
+                try:
+                    v = np.convolve(v,np.hamming(5),mode = "same")
+                    axs[1].plot(all_time[i],all_v[i],color = colors[cidx])#/(i%3+1))
+                except:
+                    axs[1].plot(all_time[i],all_v[i],color = colors[cidx])#/(i%3+1))
+            
+            all_x2 = [all_lengths[i] + item for item in all_x[i]]
+            axs[0].fill_between(all_time[i],all_x[i],all_x2,color = colors[cidx])
+            
+            axs[1].set(xlabel='time(s)',ylabel='Velocity (ft/s)')
+            axs[0].set(ylabel='X-pos (ft)')
+
+            axs[1].set_ylim(-60,0)
+        
+        plt.show()  
     
     def estimate_ts_bias(self):
         """
@@ -1463,7 +1558,7 @@ class Annotator():
     
 if __name__ == "__main__":
     overwrite = False
-    scene_id = 4
+    scene_id = 6
     directory = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k"
     directory = "/home/worklab/Data/dataset_beta/sequence_{}".format(scene_id)
         
@@ -1471,8 +1566,9 @@ if __name__ == "__main__":
         ann.run()
         
     except:
-        ann = Annotator(directory,scene_id = scene_id)
+        ann = Annotator(directory,scene_id = scene_id,homography_id = 3)
         #ann.estimate_ts_bias()
         #ann.plot_all_trajectories()
+        ann.plot_one_lane()
         ann.run()
     #ann.hg.hg1.plot_test_point([736,12,0],"/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp")

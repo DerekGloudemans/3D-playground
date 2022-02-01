@@ -27,7 +27,7 @@ def get_homographies(save_file = "i24_all_homography.cpkl", directory = "/home/w
         
         
         hg = Homography()
-        for camera_name in ["p1c1","p1c2","p1c3","p1c4","p1c5","p1c6","p2c1","p2c3","p2c4","p2c5","p2c6","p3c1","p3c2","p3c3","p3c4","p3c5","p3c6"]:
+        for camera_name in ["p1c1","p1c2","p1c3","p1c4","p1c5","p1c6","p2c1","p2c3","p2c5","p2c6","p3c1","p3c2","p3c3","p3c4","p3c5","p3c6"]:
             
             print("Adding camera {} to homography".format(camera_name))
             
@@ -900,7 +900,7 @@ class Homography_Wrapper():
         
 
 # basic test code
-if __name__ == "__main__":
+if False and __name__ == "__main__":
     
     camera_name = "p2c4"
     
@@ -945,11 +945,11 @@ if __name__ == "__main__":
     # hg.plot_test_point([800,108,0],im_dir)
     
     # test Homography Wrapper
-    directory = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform3"
-    hg1 = get_homographies(save_file = "EB_homography2.cpkl",directory = directory,direction = "EB",fit_Z = False)
-    hg2 = get_homographies(save_file = "WB_homography2.cpkl",directory = directory,direction = "WB",fit_Z = False)
+    directory = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform4"
+    hg1 = get_homographies(save_file = "EB_homography3.cpkl",directory = directory,direction = "EB",fit_Z = False)
+    hg2 = get_homographies(save_file = "WB_homography3.cpkl",directory = directory,direction = "WB",fit_Z = False)
     
-    hgw = Homography_Wrapper()
+    hgw = Homography_Wrapper(hg1 = hg1,hg2 = hg2)
     
     frame = hg1.plot_boxes(frame,boxes,color = (0,0,255))
     test_boxes = hgw.im_to_state(boxes,name = camera_name, heights = hgw.guess_heights(classes))
