@@ -141,6 +141,8 @@ class Annotator():
         self.new = None
         self.clicked = False
         self.clicked_camera = None
+        self.TEXT = True
+        self.LANES = True
         self.plot()
         
         self.active_command = "DIMENSION"
@@ -161,6 +163,7 @@ class Annotator():
         self.AUTO = True
         
         self.stride = 20
+        self.plot_idx = 0
     
     def safe(self,x):
         """
@@ -298,24 +301,50 @@ class Annotator():
     
                
                # plot labels
-               times = [item["timestamp"] for item in ts_data]
-               classes = [item["class"] for item in ts_data]
-               ids = [item["id"] for item in ts_data]
-               speeds = [0.0 for item in ts_data]  # in mph
-               directions = [item["direction"] for item in ts_data]
-               directions = ["WB" if item == -1 else "EB" for item in directions]
-               camera.frame = Data_Reader.plot_labels(None,frame,im_boxes,boxes,classes,ids,speeds,directions,times)
+               if self.TEXT:
+                   times = [item["timestamp"] for item in ts_data]
+                   classes = [item["class"] for item in ts_data]
+                   ids = [item["id"] for item in ts_data]
+                   speeds = [0.0 for item in ts_data]  # in mph
+                   directions = [item["direction"] for item in ts_data]
+                   directions = ["WB" if item == -1 else "EB" for item in directions]
+                   camera.frame = Data_Reader.plot_labels(None,frame,im_boxes,boxes,classes,ids,speeds,directions,times)
            
-            
+               if self.LANES:
+                   lines = torch.tensor([[0,0,500,0,0,1],
+                                         [0,12,500,0,0,1],
+                                         [0,24,500,0,0,1],
+                                         [0,36,500,0,0,1],
+                                         [0,48,500,0,0,1]]).float()
+                   lines[:,0] = self.hg.hg1.correspondence[camera.name]["space_pts"][0][0]
+                   lines[:,1] += self.hg.hg1.correspondence[camera.name]["space_pts"][0][1]
+                   self.hg.plot_state_boxes(frame,lines,color = (0,0,255),name = camera.name)
+                   
+                   lines = torch.tensor([[0,0,-500,0,0,-1],
+                                  [0,12,-500,0,0,-1],
+                                  [0,24,-500,0,0,-1],
+                                  [0,36,-500,0,0,-1],
+                                  [0,48,-500,0,0,-1]]).float()
+                   lines[:,0] = self.hg.hg2.correspondence[camera.name]["space_pts"][0][0]
+                   lines[:,1] += self.hg.hg2.correspondence[camera.name]["space_pts"][0][1]
+                   self.hg.plot_state_boxes(frame,lines,color = (0,0,255),name = camera.name)
+                   # lane_lines = torch.tensor([[[801,0,0],[800,0,0]],[[0,12,0],[2000,12,0]],[[0,24,0],[2000,24,0]],[[0,36,0],[2000,36,0]],[[0,48,0],[2000,48,0]]]).float()
+                   # im_lanes = self.hg.space_to_im(lane_lines,name = camera.name).int()
+                   # for lane in im_lanes:
+                   #     p1 = int(lane[0,0]),int(lane[0,1])
+                   #     p2 = int(lane[1,0]),int(lane[1,1])
+                   #     cv2.line(frame,p1,p2,(0,0,255),1)
+                
+                   
            # print the estimated time_error for camera relative to first sequence
-           error_label = "Estimated Frame Time: {}".format(frame_ts)
-           text_size = 1.6
-           frame = cv2.putText(frame, error_label, (20,30), cv2.FONT_HERSHEY_PLAIN,text_size, [1,1,1], 2)
-           frame = cv2.putText(frame, error_label, (20,30), cv2.FONT_HERSHEY_PLAIN,text_size, [0,0,0], 1)
-           error_label = "Estimated Frame Bias: {}".format(cam_ts_bias)
-           text_size = 1.6
-           frame = cv2.putText(frame, error_label, (20,60), cv2.FONT_HERSHEY_PLAIN,text_size, [1,1,1], 2)
-           frame = cv2.putText(frame, error_label, (20,60), cv2.FONT_HERSHEY_PLAIN,text_size, [0,0,0], 1)
+           # error_label = "Estimated Frame Time: {}".format(frame_ts)
+           # text_size = 1.6
+           # frame = cv2.putText(frame, error_label, (20,30), cv2.FONT_HERSHEY_PLAIN,text_size, [1,1,1], 2)
+           # frame = cv2.putText(frame, error_label, (20,30), cv2.FONT_HERSHEY_PLAIN,text_size, [0,0,0], 1)
+           # error_label = "Estimated Frame Bias: {}".format(cam_ts_bias)
+           # text_size = 1.6
+           # frame = cv2.putText(frame, error_label, (20,60), cv2.FONT_HERSHEY_PLAIN,text_size, [1,1,1], 2)
+           # frame = cv2.putText(frame, error_label, (20,60), cv2.FONT_HERSHEY_PLAIN,text_size, [0,0,0], 1)
            
            
            
@@ -899,7 +928,80 @@ class Annotator():
         else:
             print("Can't undo")
     
-       
+    
+    def plot_trajectory(self,obj_idx = 0):
+        all_x = []
+        all_y = []
+        all_v = []
+        all_time = []
+        all_ids = []
+        all_lengths = []
+        
+        t0 = min(list(self.all_ts[0].values()))
+        
+        for cam_idx, camera in enumerate(self.cameras):
+            cam_name = camera.name
+        
+            
+            x = []
+            y = []
+            v = []
+            time = []
+            
+            for frame in range(0,len(self.data),10):
+                key = "{}_{}".format(cam_name,obj_idx)
+                item = self.data[frame].get(key)
+                if item is not None:
+                    x.append(self.safe(item["x"]))
+                    y.append(self.safe(item["y"]))
+                    time.append(self.safe(item["timestamp"]) + self.ts_bias[cam_idx])
+                    length = item["l"]
+           
+            
+            
+            
+            if len(time) > 1:
+                time = [item - t0 for item in time]
+
+                # finite difference velocity estimation
+                v = [(x[i] - x[i-1]) / (time[i] - time[i-1] + 1e-08) for i in range(1,len(x))] 
+                v += [v[-1]]
+                
+                
+                all_time.append(time)
+                all_v.append(v)
+                all_x.append(x)
+                all_y.append(y)
+                all_ids.append(obj_idx)
+                all_lengths.append(length)
+        
+        fig, axs = plt.subplots(3,sharex = True,figsize = (24,18))
+        colors = self.colors
+        
+        for i in range(len(all_v)):
+            
+            cidx = all_ids[i]
+            mk = ["s","D","o"][i%3]
+            
+            # axs[0].scatter(all_time[i],all_x[i],c = colors[cidx:cidx+1]/(i%3+1),marker = mk)
+            # axs[1].scatter(all_time[i],all_v[i],c = colors[cidx:cidx+1]/(i%3+1),marker = mk)
+            # axs[2].scatter(all_time[i],all_y[i],c = colors[cidx:cidx+1]/(i%3+1),marker = mk)
+            
+            axs[0].plot(all_time[i],all_x[i],color = colors[cidx])#/(i%1+1))
+            axs[1].plot(all_time[i],all_v[i],color = colors[cidx])#/(i%3+1))
+            axs[2].plot(all_time[i],all_y[i],color = colors[cidx])#/(i%3+1))
+            
+            all_x2 = [all_lengths[i] + item for item in all_x[i]]
+            axs[0].fill_between(all_time[i],all_x[i],all_x2,color = colors[cidx])
+            
+            axs[2].set(xlabel='time(s)', ylabel='Y-pos (ft)')
+            axs[1].set(ylabel='Velocity (ft/s)')
+            axs[0].set(ylabel='X-pos (ft)')
+
+            axs[1].set_ylim(-150,150)
+        
+        plt.show()  
+    
     def plot_all_trajectories(self):
         all_x = []
         all_y = []
@@ -1137,6 +1239,36 @@ class Annotator():
             axs[1].set_ylim(-60,0)
         
         plt.show()  
+                
+    def replace_homgraphy(self):
+        
+        # get replacement homography
+        hid = 3
+        with open("EB_homography{}.cpkl".format(hid),"rb") as f:
+            hg1 = pickle.load(f) 
+        with open("WB_homography{}.cpkl".format(hid),"rb") as f:
+            hg2 = pickle.load(f) 
+        hg_new  = Homography_Wrapper(hg1=hg1,hg2=hg2)    
+    
+        # copy height scale values from old homography to new homography
+    
+        # create new copy of data
+        new_data = []
+        
+        # for each frame in data
+        
+            # for each camera in frame data
+        
+                # for each box in camera that was manually drawn
+        
+                    # find the box that minimizes the reprojection error of corner coordinates
+    
+                        # append copy of data to new_data
+        
+        # overwrite self.data with new_data
+        # overwrite self.hg with hg_new
+        
+        # print average pixel reprojection error
     
     def estimate_ts_bias(self):
         """
@@ -1500,7 +1632,17 @@ class Annotator():
            elif key == ord("?"):
                self.estimate_ts_bias()
                self.plot_all_trajectories()
-
+           elif key == ord("t"):
+               self.TEXT = not self.TEXT
+               self.plot()               
+           elif key == ord("l"):
+               self.LANES = not self.LANES
+               self.plot()
+               
+           elif key == ord("p"):
+               self.plot_trajectory(obj_idx = self.plot_idx)
+               self.plot_idx += 1
+               
            # toggle commands
            elif key == ord("a"):
                self.active_command = "ADD"
@@ -1559,6 +1701,7 @@ class Annotator():
 if __name__ == "__main__":
     overwrite = False
     scene_id = 6
+    
     directory = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k"
     directory = "/home/worklab/Data/dataset_beta/sequence_{}".format(scene_id)
         
