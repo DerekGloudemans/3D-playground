@@ -114,6 +114,8 @@ class Annotator():
             self.data = []
             self.ts_bias = np.zeros(len(self.seq_keys))
             self.all_ts = []
+            self.poly_params = dict([(camera.name+"_EB",[0,0,0]) for camera in self.cameras]+[(camera.name+"_WB",[0,0,0]) for camera in self.cameras])
+            self.curve_points = dict([(camera.name+"_EB",[]) for camera in self.cameras]+[(camera.name+"_WB",[]) for camera in self.cameras])
         
         # get length of cameras, and ensure data is long enough to hold all entries
         self.max_frames = max([len(camera) for camera in self.cameras])
@@ -143,7 +145,6 @@ class Annotator():
         self.clicked_camera = None
         self.TEXT = True
         self.LANES = True
-        self.plot()
         
         self.active_command = "DIMENSION"
         self.right_click = False
@@ -164,6 +165,11 @@ class Annotator():
         
         self.stride = 20
         self.plot_idx = 0
+        
+        
+
+        self.plot()
+
     
     def safe(self,x):
         """
@@ -310,30 +316,46 @@ class Annotator():
                    directions = ["WB" if item == -1 else "EB" for item in directions]
                    camera.frame = Data_Reader.plot_labels(None,frame,im_boxes,boxes,classes,ids,speeds,directions,times)
            
-               if self.LANES:
-                   lines = torch.tensor([[0,0,500,0,0,1],
-                                         [0,12,500,0,0,1],
-                                         [0,24,500,0,0,1],
-                                         [0,36,500,0,0,1],
-                                         [0,48,500,0,0,1]]).float()
-                   lines[:,0] = self.hg.hg1.correspondence[camera.name]["space_pts"][0][0]
-                   lines[:,1] += self.hg.hg1.correspondence[camera.name]["space_pts"][0][1]
-                   self.hg.plot_state_boxes(frame,lines,color = (0,0,255),name = camera.name)
+           if self.LANES:
+                # lines = torch.tensor([[0,0,500,0,0,1],
+                #                       [0,12,500,0,0,1],
+                #                       [0,24,500,0,0,1],
+                #                       [0,36,500,0,0,1],
+                #                       [0,48,500,0,0,1]]).float()
+                # lines[:,0] = self.hg.hg1.correspondence[camera.name]["space_pts"][0][0]
+                # lines[:,1] += self.hg.hg1.correspondence[camera.name]["space_pts"][0][1]
+                # self.hg.plot_state_boxes(frame,lines,color = (0,0,255),name = camera.name)
+                
+                # lines = torch.tensor([[0,0,-500,0,0,-1],
+                #                [0,12,-500,0,0,-1],
+                #                [0,24,-500,0,0,-1],
+                #                [0,36,-500,0,0,-1],
+                #                [0,48,-500,0,0,-1]]).float()
+                # lines[:,0] = self.hg.hg2.correspondence[camera.name]["space_pts"][0][0]
+                # lines[:,1] += self.hg.hg2.correspondence[camera.name]["space_pts"][0][1]
+                # self.hg.plot_state_boxes(frame,lines,color = (0,0,255),name = camera.name)
+                # lane_lines = torch.tensor([[[801,0,0],[800,0,0]],[[0,12,0],[2000,12,0]],[[0,24,0],[2000,24,0]],[[0,36,0],[2000,36,0]],[[0,48,0],[2000,48,0]]]).float()
+                # im_lanes = self.hg.space_to_im(lane_lines,name = camera.name).int()
+                # for lane in im_lanes:
+                #     p1 = int(lane[0,0]),int(lane[0,1])
+                #     p2 = int(lane[1,0]),int(lane[1,1])
+                #     cv2.line(frame,p1,p2,(0,0,255),1)
+                
+               for direction in ["_EB","_WB"]: 
+                   # get polyline coordinates in space
+                   p2,p1,p0 = self.poly_params[camera.name+direction]
+                   x_curve = np.linspace(-3000,3000,6000)
+                   y_curve = np.power(x_curve,2)*p2 + x_curve*p1 + p0
+                   z_curve = x_curve * 0
+                   curve = np.stack([x_curve,y_curve,z_curve],axis = 1)
+                   curve = torch.from_numpy(curve).unsqueeze(1)
+                   curve_im = self.hg.space_to_im(curve,name = camera.name)
                    
-                   lines = torch.tensor([[0,0,-500,0,0,-1],
-                                  [0,12,-500,0,0,-1],
-                                  [0,24,-500,0,0,-1],
-                                  [0,36,-500,0,0,-1],
-                                  [0,48,-500,0,0,-1]]).float()
-                   lines[:,0] = self.hg.hg2.correspondence[camera.name]["space_pts"][0][0]
-                   lines[:,1] += self.hg.hg2.correspondence[camera.name]["space_pts"][0][1]
-                   self.hg.plot_state_boxes(frame,lines,color = (0,0,255),name = camera.name)
-                   # lane_lines = torch.tensor([[[801,0,0],[800,0,0]],[[0,12,0],[2000,12,0]],[[0,24,0],[2000,24,0]],[[0,36,0],[2000,36,0]],[[0,48,0],[2000,48,0]]]).float()
-                   # im_lanes = self.hg.space_to_im(lane_lines,name = camera.name).int()
-                   # for lane in im_lanes:
-                   #     p1 = int(lane[0,0]),int(lane[0,1])
-                   #     p2 = int(lane[1,0]),int(lane[1,1])
-                   #     cv2.line(frame,p1,p2,(0,0,255),1)
+                   mask = ((curve_im[:,:,0] > 0).int() + (curve_im[:,:,0] < 1920).int() + (curve_im[:,:,1] > 0).int() + (curve_im[:,:,1] < 1080).int()) == 4
+                   curve_im = curve_im[mask,:]
+                   
+                   curve_im = curve_im.data.numpy().astype(int)
+                   cv2.polylines(frame,[curve_im],False,(255,100,0),1)
                 
                    
            # print the estimated time_error for camera relative to first sequence
@@ -1250,25 +1272,134 @@ class Annotator():
             hg2 = pickle.load(f) 
         hg_new  = Homography_Wrapper(hg1=hg1,hg2=hg2)    
     
-        # copy height scale values from old homography to new homography
-    
+        # # copy height scale values from old homography to new homography
+        # for corr in hg_new.hg1.correspondence.keys():
+        #     if corr in self.hg.hg1.correspondence.keys():
+        #         hg_new.hg1.correspondence[corr]["P"][]
+        # if direction == 1:
+        #         self.hg.hg1.correspondence[self.clicked_camera]["P"][:,2] *= sign*delta
+        #     else:   
+        #         self.hg.hg2.correspondence[self.clicked_camera]["P"][:,2] *= sign*delta
+        
         # create new copy of data
         new_data = []
-        
+        all_errors = [0]
         # for each frame in data
-        
+        for f_idx,frame_data in enumerate(self.data):
+            
+            if f_idx > self.last_frame:
+                break
+            
+            new_data.append({})
+            if f_idx % 10 == 0:
+                print("On frame {}. Average error so far: {}".format(f_idx,sum(all_errors)/len(all_errors)))
+            
             # for each camera in frame data
+            for camera in self.cameras:
+                cam = camera.name
+                
+                # for each box in camera 
+                for obj_idx in range(self.get_unused_id()):
+                   key = "{}_{}".format(cam,obj_idx)
+                   if frame_data.get(key): 
+                       obj = frame_data.get(key)
+                       
+                       # if box was manually drawn
+                       if obj["gen"] == "Manual":
+                           
+                           base = copy.deepcopy(obj)
+                           
+                           # get old box image coordinates
+                           old_box = torch.tensor([obj["x"],obj["y"],obj["l"],obj["w"],obj["h"],obj["direction"]]).unsqueeze(0)
+                           old_box_im = self.hg.state_to_im(old_box,name = cam)
+                           
+                           # find new box that minimizes the reprojection error of corner coordinates
+                           center = obj["x"],obj["y"]
+                           search_rad = 50
+                           grid_size = 11
+                           while search_rad > 1:
+                               x = np.linspace(center[0]-search_rad,center[0]+search_rad,grid_size)
+                               y = np.linspace(center[1]-search_rad,center[1]+search_rad,grid_size)
+                               shifts = []
+                               for i in x:
+                                   for j in y:
+                                       shift_box = torch.tensor([i,j, base["l"],base["w"],base["h"],base["direction"]])
+                                       shifts.append(shift_box)
+                                    
+                               # convert shifted grid of boxes into 2D space
+                               shifts = torch.stack(shifts)
+                               boxes_space = hg_new.state_to_im(shifts,name = cam)
+                                 
+                                
+                                
+                               # compute error between old_box_im and each shifted box footprints
+                               box_expanded = old_box_im.repeat(boxes_space.shape[0],1,1)  
+                               error = ((boxes_space[:,:4,:] - box_expanded[:,:4,:])**2).mean(dim = 2).mean(dim = 1)
+                                
+                               # find min_error and assign to center
+                               min_idx = torch.argmin(error)
+                               center = x[min_idx//grid_size],y[min_idx%grid_size]
+                               search_rad /= 5
+                                
+                           # save box
+                           min_err = error[min_idx].item()
+                           all_errors.append(min_err)
+                           base["x"] = self.safe(center[0])
+                           base["y"] = self.safe(center[1])
+                           
+                           new_data[f_idx][key] = base
+                           
+                           # di = "EB" if obj["direction"] == 1 else "WB"
+                           # print("Camera {}, {} obj {}: Error {}".format(cam,di,obj_idx,min_err))
+                           
         
-                # for each box in camera that was manually drawn
-        
-                    # find the box that minimizes the reprojection error of corner coordinates
-    
-                        # append copy of data to new_data
         
         # overwrite self.data with new_data
+        self.data = new_data
         # overwrite self.hg with hg_new
+        self.hg = hg_new
+                
+        # reinterpolate rest of data
+        for i in range(self.get_unused_id()):
+            self.interpolate(i)
+            
         
-        # print average pixel reprojection error
+    def fit_curvature(self,box,min_pts = 4):   
+        """
+        Stores clicked points in array for each camera. If >= min_pts points have been clicked, after each subsequent clicked point the curvature lines are refit
+        """
+        
+        point = self.box_to_state(box)[0]
+        direction = "_EB" if point[1] < 60 else "_WB"
+
+        # store point in curvature_points[cam_idx]
+        self.curve_points[self.clicked_camera+direction].append(point)
+        
+        # if there are sufficient fitting points, recompute poly_params for active camera
+        if len(self.curve_points[self.clicked_camera+direction]) >= min_pts:
+            x_curve = np.array([self.safe(p[0]) for p in self.curve_points[self.clicked_camera+direction]])
+            y_curve = np.array([self.safe(p[1]) for p in self.curve_points[self.clicked_camera+direction]])
+            pparams = np.polyfit(x_curve,y_curve,2)
+            print("Fit {} poly params for camera {}".format(self.clicked_camera,direction))
+            self.poly_params[self.clicked_camera+direction] = pparams
+            
+            self.plot()
+
+    
+    def erase_curvature(self,box):
+        """
+        Removes all clicked curvature points for selected camera
+        """
+        point = self.box_to_state(box)[0]
+        
+        direction = "_EB" if point[1] < 60 else "_WB"
+        # erase all points
+        self.curve_points[self.clicked_camera+direction] = []
+
+        # reset curvature polynomial coefficients to 0
+        self.poly_params[self.clicked_camera+direction] = [0,0,0]
+        
+        self.plot()
     
     def estimate_ts_bias(self):
         """
@@ -1363,14 +1494,22 @@ class Annotator():
     
     def save2(self):
         with open("labeler_cache_sequence_{}.cpkl".format(self.scene_id),"wb") as f:
-            data = [self.data,self.all_ts,self.ts_bias,self.hg]
+            data = [self.data,self.all_ts,self.ts_bias,self.hg,self.poly_params]
             pickle.dump(data,f)
             print("Saved labels")
             self.count()
     
     def reload(self):
-         with open("labeler_cache_sequence_{}.cpkl".format(self.scene_id),"rb") as f:
-            self.data,self.all_ts,self.ts_bias,self.hg = pickle.load(f)
+        try:
+            with open("labeler_cache_sequence_{}.cpkl".format(self.scene_id),"rb") as f:
+                self.data,self.all_ts,self.ts_bias,self.hg,self.poly_params = pickle.load(f)
+                self.curve_points = dict([(camera.name+"_EB",[]) for camera in self.cameras]+[(camera.name+"_WB",[]) for camera in self.cameras])
+            
+        except:
+            with open("labeler_cache_sequence_{}.cpkl".format(self.scene_id),"rb") as f:
+                self.data,self.all_ts,self.ts_bias,self.hg = pickle.load(f)
+                self.poly_params = dict([(camera.name+"_EB",[0,0,0]) for camera in self.cameras]+[(camera.name+"_WB",[0,0,0]) for camera in self.cameras])
+                self.curve_points = dict([(camera.name+"_EB",[]) for camera in self.cameras]+[(camera.name+"_WB",[]) for camera in self.cameras])
     
     def save(self):
         outfile = "working_3D_tracking_data.csv"
@@ -1574,6 +1713,12 @@ class Annotator():
                 elif self.active_command == "2D PASTE":
                     self.paste_in_2D_bbox(self.new)
                     
+                elif self.active_command == "CURVE":
+                    self.fit_curvature(self.new)
+                    
+                elif self.active_command == "ERASE CURVE":
+                    self.erase_curvature()
+                    
                 self.plot()
 
                 self.new = None   
@@ -1664,6 +1809,11 @@ class Annotator():
                self.active_command = "HOMOGRAPHY"
            elif key == ord("p"):
                self.active_command = "2D PASTE"
+           elif key == ord("*"):
+               self.active_command = "CURVE"
+           elif key == ord("&"):
+               self.active_command = "ERASE CURVE"
+               
           
            elif self.active_command == "COPY PASTE" and self.copied_box:
                nudge = 0.25
@@ -1700,7 +1850,7 @@ class Annotator():
     
 if __name__ == "__main__":
     overwrite = False
-    scene_id = 6
+    scene_id = 0
     
     directory = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k"
     directory = "/home/worklab/Data/dataset_beta/sequence_{}".format(scene_id)
@@ -1712,6 +1862,6 @@ if __name__ == "__main__":
         ann = Annotator(directory,scene_id = scene_id,homography_id = 3)
         #ann.estimate_ts_bias()
         #ann.plot_all_trajectories()
-        ann.plot_one_lane()
+        #ann.replace_homgraphy()
         ann.run()
     #ann.hg.hg1.plot_test_point([736,12,0],"/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp")
