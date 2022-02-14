@@ -295,7 +295,8 @@ class Annotator():
            # stack objects as tensor and aggregate other data for label
            ts_data = list(self.data[self.frame_idx].values())
            ts_data = list(filter(lambda x: x["camera"] == camera.name,ts_data))
-           
+           if True:
+               ts_data = [self.offset_box_y(obj,reverse = True) for obj in ts_data]
            if len(ts_data) > 0:
                boxes = torch.stack([torch.tensor([obj["x"],obj["y"],obj["l"],obj["w"],obj["h"],obj["direction"]]).float() for obj in ts_data])
                
@@ -743,7 +744,7 @@ class Annotator():
             
 
             
-    def interpolate(self,obj_idx):
+    def interpolate(self,obj_idx,verbose = True):
         
         #self.print_all(obj_idx)
         
@@ -799,7 +800,7 @@ class Annotator():
                     del prev_box
                     prev_box = copy.deepcopy(cur_box)
         
-        print("Interpolated boxes for object {}".format(obj_idx))
+        if verbose: print("Interpolated boxes for object {}".format(obj_idx))
         
     def correct_homography_Z(self,box):
         dx = self.safe(box[2]-box[0]) 
@@ -1196,7 +1197,7 @@ class Annotator():
                 v = []
                 time = []
                 
-                for frame in range(0,len(self.data),10):
+                for frame in range(0,len(self.data)):
                     key = "{}_{}".format(cam_name,obj_idx)
                     item = self.data[frame].get(key)
                     if item is not None:
@@ -1291,7 +1292,7 @@ class Annotator():
                 break
             
             new_data.append({})
-            if f_idx % 10 == 0:
+            if f_idx % 100 == 0:
                 print("On frame {}. Average error so far: {}".format(f_idx,sum(all_errors)/len(all_errors)))
             
             # for each camera in frame data
@@ -1361,7 +1362,84 @@ class Annotator():
                 
         # reinterpolate rest of data
         for i in range(self.get_unused_id()):
-            self.interpolate(i)
+            self.interpolate(i,verbose = False)
+        
+        self.plot_all_trajectories()
+
+            
+    def replace_y(self):
+            
+        # create new copy of data
+        new_data = []
+        
+        # for each frame in data
+        for f_idx,frame_data in enumerate(self.data):
+            
+            if f_idx > self.last_frame:
+                break
+            
+            new_data.append({})
+            if f_idx % 100 == 0:
+                print("On frame {}.".format(f_idx))
+            
+            # for each camera in frame data
+            for camera in self.cameras:
+                cam = camera.name
+                
+                # for each box in camera 
+                for obj_idx in range(self.get_unused_id()):
+                   key = "{}_{}".format(cam,obj_idx)
+                   if frame_data.get(key): 
+                       obj = frame_data.get(key)
+                       
+                       # if box was manually drawn
+                       
+                       if "gen" not in obj.keys() or obj["gen"] == "Manual":
+                           
+                           base = copy.deepcopy(obj)
+                           new_box = self.offset_box_y(base)
+                           
+                           new_data[f_idx][key] = new_box
+                           
+        # overwrite self.data with new_data
+        self.data = new_data
+        
+        # reinterpolate rest of data
+        for i in range(self.get_unused_id()):
+            self.interpolate(i,verbose = False) 
+            
+
+        
+        self.plot_all_trajectories()
+
+            
+    def offset_box_y(self,box,reverse = False):
+        
+        camera = box["camera"]
+        direction = box["direction"]
+        
+        x = box["x"]
+        
+        
+        direct =  "_EB" if direction == 1 else"_WB"
+        key = camera + direct
+        
+        p2,p1,p0 = self.poly_params[key]
+        
+        y_offset = x**2*p2 + x*p1 + p0
+        
+        # if on the WB side, we need to account for the non-zero location of the leftmost line so we don't shift all the way back to near 0
+        if direction == -1:
+            y_straight_offset = self.hg.hg2.correspondence[camera]["space_pts"][0][1]
+            y_offset -= y_straight_offset
+            
+        if not reverse:
+            box["y"] -= y_offset
+        else:
+            box["y"] += y_offset
+
+        
+        return box
             
         
     def fit_curvature(self,box,min_pts = 4):   
@@ -1491,6 +1569,97 @@ class Annotator():
             
             else:
                 print("No matching points for cameras {} and {}".format(cam,prev_cam))
+                
+                
+    def est_y_error(self):
+        """
+        Moving sequentially through the cameras, estimate y-error of camera n
+        - Find all objects that are seen in both camera n and n-1, and that 
+        overlap in x-space
+        - Sample p evenly-spaced x points from the overlap
+        - Store the difference in y
+        - Average all ts_bias estimates to get ts_bias
+        - For analysis, print statistics on the error estiamtes
+        """
+        
+        all_diffs = [] 
+        
+        for cam_idx  in range(1,len(self.cameras)):
+            cam = self.cameras[cam_idx].name
+            prev_cam = self.cameras[cam_idx-1].name
+            
+            diffs = []
+            
+            for obj_idx in range(self.get_unused_id()):
+                
+                # check whether object exists in both cameras and overlaps
+                c1x = []
+                c1y = []
+                c0x = []
+                c0y = []
+                
+                for frame_data in self.data:
+                    key = "{}_{}".format(cam,obj_idx)
+                    if frame_data.get(key):
+                        obj = frame_data.get(key)
+                        c1x.append(self.safe(obj["x"]))
+                        c1y.append(self.safe(obj["y"]))
+                    
+                    key = "{}_{}".format(prev_cam,obj_idx)
+                    if frame_data.get(key):
+                        obj = frame_data.get(key)
+                        c0x.append(self.safe(obj["x"]))
+                        c0y.append(self.safe(obj["y"]))
+            
+                if len(c0x) > 1 and len(c1x) > 1 and max(c0x) > min (c1x):
+                    
+                    # camera objects overlap from minx to maxx
+                    minx = max(min(c1x),min(c0x))
+                    maxx = min(max(c1x),max(c0x))
+                    
+                    # get p evenly spaced x points
+                    p = 5
+                    ran = maxx - minx
+                    sample_points = []
+                    for i in range(p):
+                        point = minx + ran/(p-1)*i
+                        sample_points.append(point)
+                        
+                    for point in sample_points:
+                        
+                        # estimate time at which cam object was at point
+                        for i in range(1,len(c1x)):
+                            if (c1x[i] - point) *  (c1x[i-1]- point) <= 0:
+                                ratio = (point-c1x[i-1])/ (c1x[i]-c1x[i-1]+ 1e-08)
+                                y1 = c1y[i-1] + (c1y[i] - c1y[i-1])*ratio
+                        
+                        # estimate time at which prev_cam object was at point
+                        for j in range(1,len(c0x)):
+                            if (c0x[j] - point) *  (c0x[j-1]- point) <= 0:
+                                ratio = (point-c0x[j-1])/ (c0x[j]-c0x[j-1] + 1e-08)
+                                y2 = c0y[j-1] + (c0y[j] - c0y[j-1])*ratio
+                        
+
+                        diff = np.abs(self.safe(y2-y1))
+                        diffs.append(diff)
+        
+            # after all objects have been considered
+            if len(diffs) > 0:
+                diffs = np.array(diffs)
+                avg_diff = np.mean(diffs)
+                stdev = np.std(diffs)
+                
+                # since diff is positive if camera clock is ahead, we subtract it such that adding ts_bias to camera timestamps corrects the error
+                
+                print("Camera {} and {} average y-error: {}ft ({})ft stdev".format(cam,prev_cam,avg_diff,stdev))
+                all_diffs.append(avg_diff)
+            
+            else:
+                print("No matching points for cameras {} and {}".format(cam,prev_cam))
+        
+        print("Average y-error over all cameras: {}".format(sum(all_diffs)/len(all_diffs)))
+        
+        
     
     def save2(self):
         with open("labeler_cache_sequence_{}.cpkl".format(self.scene_id),"wb") as f:
@@ -1717,7 +1886,7 @@ class Annotator():
                     self.fit_curvature(self.new)
                     
                 elif self.active_command == "ERASE CURVE":
-                    self.erase_curvature()
+                    self.erase_curvature(self.new)
                     
                 self.plot()
 
@@ -1860,8 +2029,14 @@ if __name__ == "__main__":
         
     except:
         ann = Annotator(directory,scene_id = scene_id,homography_id = 3)
-        #ann.estimate_ts_bias()
-        #ann.plot_all_trajectories()
+        ann.est_y_error()
+        ann.plot_all_trajectories()
+
         #ann.replace_homgraphy()
+        #ann.est_y_error()
+        
+        ann.replace_y()
+        ann.est_y_error()        
+        
         ann.run()
     #ann.hg.hg1.plot_test_point([736,12,0],"/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp")
