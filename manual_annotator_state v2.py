@@ -78,7 +78,7 @@ class Annotator():
         # get sequences
         self.sequences = {}
         for sequence in os.listdir(sequence_directory):    
-            if True: #"_0" in sequence and "p3c6" not in sequence: 
+            if True and "p3c6" not in sequence: 
                 cap = Camera_Wrapper(os.path.join(sequence_directory,sequence))
                 self.sequences[cap.name] = cap
         
@@ -296,7 +296,7 @@ class Annotator():
            ts_data = list(self.data[self.frame_idx].values())
            ts_data = list(filter(lambda x: x["camera"] == camera.name,ts_data))
            if True:
-               ts_data = [self.offset_box_y(obj,reverse = True) for obj in ts_data]
+                ts_data = [self.offset_box_y(obj.copy(),reverse = True) for obj in ts_data]
            if len(ts_data) > 0:
                boxes = torch.stack([torch.tensor([obj["x"],obj["y"],obj["l"],obj["w"],obj["h"],obj["direction"]]).float() for obj in ts_data])
                
@@ -1262,7 +1262,46 @@ class Annotator():
             axs[1].set_ylim(-60,0)
         
         plt.show()  
+
+    def replace_timestamps(self):
+        """
+        Replace timestamps with timestamps at nominal framerate. 
+        Then reinterpolate boxes based on these timestamps
+        """
+        
+        # get nominal framerate for each camera
+        start_ts = [self.all_ts[0][key] for key in self.seq_keys]
+        spans = [self.all_ts[-1][key] - self.all_ts[0][key] for key in self.seq_keys]
+        frame_count = len(self.all_ts)
+        
+        fps_nom = [frame_count/spans[i] for i in range(len(spans))]
+        print (fps_nom)
+        
+        # modify self.ts for each camera
+        for i in range(len(self.all_ts)):
+            for j in range(len(self.seq_keys)):
+                key = self.seq_keys[j]
+                self.all_ts[i][key] = start_ts[j] + 1.0/fps_nom[j]*i
+        
+        new_data = []
+        # overwrite timestamps in all labels
+        for f_idx in range(len(self.data)):
+            new_data.append({})
+            for key in self.data[f_idx]:
+                self.data[f_idx][key]["timestamp"] = self.all_ts[f_idx][self.data[f_idx][key]["camera"]]
                 
+                if "gen" in self.data[f_idx][key].keys() and self.data[f_idx][key]["gen"] != "Manual":
+                    continue
+                new_data[f_idx][key] =  copy.deepcopy(self.data[f_idx][key])
+        
+        
+        # delete and reinterpolate boxes as necessary
+        self.data = new_data
+        for i in range(self.get_unused_id()):
+            self.interpolate(i,verbose = False)
+        
+        self.plot_all_trajectories()
+            
     def replace_homgraphy(self):
         
         # get replacement homography
@@ -1570,6 +1609,7 @@ class Annotator():
             else:
                 print("No matching points for cameras {} and {}".format(cam,prev_cam))
                 
+    
                 
     def est_y_error(self):
         """
@@ -1656,8 +1696,8 @@ class Annotator():
             
             else:
                 print("No matching points for cameras {} and {}".format(cam,prev_cam))
-        
-        print("Average y-error over all cameras: {}".format(sum(all_diffs)/len(all_diffs)))
+        if len(all_diffs) > 0:
+            print("Average y-error over all cameras: {}".format(sum(all_diffs)/len(all_diffs)))
         
         
     
@@ -2028,7 +2068,7 @@ if __name__ == "__main__":
         ann.run()
         
     except:
-        ann = Annotator(directory,scene_id = scene_id,homography_id = 3)
+        ann = Annotator(directory,scene_id = scene_id,homography_id = 2)
         ann.est_y_error()
         ann.plot_all_trajectories()
 
@@ -2036,7 +2076,9 @@ if __name__ == "__main__":
         #ann.est_y_error()
         
         ann.replace_y()
-        ann.est_y_error()        
+        ann.est_y_error()
         
+        
+        #ann.replace_timestamps()
         ann.run()
     #ann.hg.hg1.plot_test_point([736,12,0],"/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp")
