@@ -11,6 +11,7 @@ import torch
 import matplotlib.pyplot as plt
 import _pickle as pickle 
 import time
+import scipy
 
 from homography import Homography,Homography_Wrapper
 from datareader import Data_Reader, Camera_Wrapper
@@ -1218,7 +1219,7 @@ class Annotator():
                     cameras.append(cam)
         
         # stack 
-        interp = torch.tensor([(1 if ("gen" in item.keys() and item["gen"] == "interpolation") else 0.01) for item in boxes])
+        interp = torch.tensor([(0.01 if ("gen" in item.keys() and item["gen"] == "Interpolation") else 1) for item in boxes])
         boxes = torch.stack([torch.tensor([obj["x"],obj["y"],obj["l"],obj["w"],obj["h"],obj["direction"],obj["timestamp"]],dtype = torch.double) for obj in boxes])
         
         
@@ -1226,22 +1227,25 @@ class Annotator():
         # a one foot change in space results in a _ pixel change in image space
          
         # convert boxes to im space - n_boxes x 8 x 2 in order: fbr,fbl,bbr,bbl,ftr,ftl,fbr,fbl
-        boxes_im = self.hg.state_to_im(boxes,name = cameras)
+        boxes_im = self.hg.state_to_im(boxes.float(),name = cameras)
         
         # y_weight = width in pixels / width in feet
-        y_diff = torch.mean(torch.pow(boxes_im[:,[0,2],:] - boxes_im[:,[1,3],:],2), dim = 2).sqrt()
+        y_diff = torch.mean(torch.mean(torch.pow(boxes_im[:,[0,2],:] - boxes_im[:,[1,3],:],2), dim = 2),dim = 1).sqrt()
         y_weight = y_diff / boxes[:,1]
         
         # x_weight = length in pixels / legnth in feet
-        x_diff = torch.mean(torch.pow(boxes_im[:,[0,1],:] - boxes_im[:,[2,3],:],2), dim = 2).sqrt()
+        x_diff = torch.mean(torch.mean(torch.pow(boxes_im[:,[0,1],:] - boxes_im[:,[2,3],:],2), dim = 2),dim = 1).sqrt()
         x_weight = x_diff / boxes[:,0]
 
         # 3. sort points and sensitivities by increasing timestamp
-        order    = boxes[:,6].sort()
+        min_ts = torch.min(boxes[:,6]).item()
+        boxes[:,6] += torch.rand(boxes[:,6].shape) * 0.001
+        order    = boxes[:,6].sort()[1]
         boxes    = boxes[order]
+        boxes[:,6] -= min_ts 
         interp   = interp[order]
-        y_weight = y_weight[order]
-        x_weight = x_weight[order]
+        y_weight = y_weight[order]  * interp
+        x_weight = x_weight[order]  * interp
         
         # # 4. fill in any gaps larger than 1/4 window_width by linear interpolation
         # gap_boxes = []
@@ -1249,66 +1253,84 @@ class Annotator():
         # gap_x_weights = []
         # for i in range(1,boxes.shape[0]):       
         
+        
+        x_spline = scipy.interpolate.fitpack2.UnivariateSpline(boxes[:,6],boxes[:,0],k = 3,w= x_weight*20,s = 100)# w = 1/x_weight,s = 10)
+        y_spline = scipy.interpolate.fitpack2.UnivariateSpline(boxes[:,6],boxes[:,1],k = 2,w=y_weight*20, s = 1000)# w = 1/y_weight,s = 10000)
+        plt.figure()
+        plt.plot(boxes[:,6],y_spline(boxes[:,6]))
+        plt.show()
+        
+        plt.figure()
+        plt.plot(boxes[:,6],x_spline(boxes[:,6]))
+        plt.show()
+        
         # 5. iteratively, find best poly fit for local neighborhood
-        min_neigh_idx  = 0
-        max_neigh_idx  = 0
-        min_window_idx = 0
-        max_window_idx = 0
-        min_ts = torch.min(boxes[:,6])
-        max_ts = torch.max(boxes[:,6])
-        for win_min in range(min_ts,max_ts,stride):
-            win_max = win_min + stride
-            neigh_min = (win_max + win_min)/2.0 - neigh_width/2.0
-            neigh_max = (win_max + win_min)/2.0 + neigh_width/2.0
+        # min_neigh_idx  = 0
+        # max_neigh_idx  = 0
+        # min_window_idx = 0
+        # max_window_idx = 0
+        # min_ts = torch.min(boxes[:,6]).item()
+        # max_ts = torch.max(boxes[:,6]).item()
+        # win_mins = np.arange(min_ts,max_ts,step = stride)
+        # for win_min in win_mins:
+        #     win_max = win_min + stride
+        #     neigh_min = (win_max + win_min)/2.0 - neigh_width/2.0
+        #     neigh_max = (win_max + win_min)/2.0 + neigh_width/2.0
             
-            # get all points in neighborhood
-            while boxes[min_neigh_idx,6] < neigh_min:
-                min_neigh_idx += 1
-            while boxes[max_neigh_idx,6] < neigh_max:
-                max_neigh_idx += 1
+        #     # get all points in neighborhood
+        #     while boxes[min_neigh_idx,6] < neigh_min:
+        #         min_neigh_idx += 1
+        #     while max_neigh_idx < boxes.shape[0] and boxes[max_neigh_idx,6] < neigh_max:
+        #         max_neigh_idx += 1
             
-            neigh_boxes = boxes[min_neigh_idx,max_neigh_idx,:]
-            neigh_x_weight = x_weight[min_neigh_idx,max_neigh_idx]
-            neigh_y_weight = y_weight[min_neigh_idx,max_neigh_idx]
+        #     neigh_boxes = boxes[min_neigh_idx:max_neigh_idx,:]
+        #     neigh_x_weight = x_weight[min_neigh_idx:max_neigh_idx]#.data.numpy()
+        #     neigh_y_weight = y_weight[min_neigh_idx:max_neigh_idx]#.data.numpy()
             
-            ts_neigh = neigh_boxes[:,6]
-            x_neigh  = neigh_boxes[:,0]
-            y_neigh = neigh_boxes[:,1]
+        #     ts_neigh = neigh_boxes[:,6] - neigh_min#.data.numpy()
+        #     x_neigh  = neigh_boxes[:,0]#.data.numpy()
+        #     y_neigh = neigh_boxes[:,1]#.data.numpy()
             
-            deg_x = min(x_order,neigh_boxes.shape[0]//2)
-            deg_y = min(y_order,neigh_boxes.shape[0]//2)
+        #     deg_x = min(x_order,neigh_boxes.shape[0]//2)
+        #     deg_y = min(y_order,neigh_boxes.shape[0]//2)
 
             
-            # fit best polynomial of up to x_order (depending on number of available points)
-            x_poly = np.polyfit(ts_neigh,x_neigh,deg_x,neigh_x_weight)
-            y_poly = np.polyfit(ts_neigh,y_neigh,deg_y,neigh_y_weight)
+        #     # fit best polynomial of up to x_order (depending on number of available points)
+        #     x_poly = np.polyfit(ts_neigh,x_neigh,deg_x,w= neigh_x_weight)
+        #     y_poly = np.polyfit(ts_neigh,y_neigh,deg_y,w= neigh_y_weight)
             
         
-            # sample polynomial at each unique timestamp within window
-            # get all points in window
-            while boxes[min_window_idx,6] < win_min:
-                min_window_idx += 1
-            while boxes[max_window_idx,6] < win_max:
-                max_window_idx += 1
+        #     # sample polynomial at each unique timestamp within window
+        #     # get all points in window
+        #     while boxes[min_window_idx,6] < win_min:
+        #         min_window_idx += 1
+        #     while max_window_idx < boxes.shape[0] and boxes[max_window_idx,6] < win_max:
+        #         max_window_idx += 1
             
-            # sample appropriate polynomials at relevant times
-            for idx in range(min_window_idx,max_window_idx):
-                t = boxes[idx,6]
-                x = sum([x_poly[pidx]*(t**pidx) for pidx in range(len(x_poly))])
-                y = sum([y_poly[pidx]*(t**pidx) for pidx in range(len(y_poly))])
-
+        #     # sample appropriate polynomials at relevant times
+        #     for idx in range(min_window_idx,max_window_idx):
+        #         t = boxes[idx,6] - neigh_min
+        #         x = sum([x_poly[pidx]*(t**pidx) for pidx in range(len(x_poly))])
+        #         y = sum([y_poly[pidx]*(t**pidx) for pidx in range(len(y_poly))])
+        #         #scipy.interpolate.UnivariateSpline
                 
-                # record foot error
-                xe = torch.abs(x - boxes[idx,0])
-                ye = torch.abs(x - boxes[idx,0])
+        #         # record foot error
+        #         xe = torch.abs(x - boxes[idx,0])
+        #         ye = torch.abs(y - boxes[idx,1])
             
-                traj_x.append(x)
-                traj_y.append(y)
-                traj_ts.append(t)
-                x_err.append(xe)
-                y_err.append(ye)
+        #         traj_x.append(x)
+        #         traj_y.append(y)
+        #         traj_ts.append(t + neigh_min)
+        #         x_err.append(xe)
+        #         y_err.append(ye)
             
-        # 6. at end, plot resuls
+        # 6. at end, plot results
+        #plt.plot(traj_ts,traj_x)
+        # plt.figure()
+        # plt.plot(traj_ts,traj_y)
+        # plt.plot(boxes[:,6],boxes[:,1])
+        # plt.show()
+            
         
         
     def plot_one_lane(self,lane = (70,85)):
@@ -2240,11 +2262,11 @@ if __name__ == "__main__":
     except:
         ann = Annotator(directory,scene_id = scene_id,homography_id = 2)
         
-        ann.replace_timestamps()
+        # ann.replace_timestamps()
         
-        ann.unbias_timestamps()
-        ann.estimate_ts_bias()
-        ann.plot_all_trajectories()
+        # ann.unbias_timestamps()
+        # ann.estimate_ts_bias()
+        # ann.plot_all_trajectories()
 
         #ann.replace_homgraphy()
         #ann.est_y_error()
@@ -2254,12 +2276,14 @@ if __name__ == "__main__":
         
         
         #ann.replace_timestamps()
-        ann.plot_all_trajectories()
+        #ann.plot_all_trajectories()
         # ann.estimate_ts_bias()
         # ann.replace_timestamps()
         # ann.plot_all_trajectories()
         
         # ann.estimate_ts_bias()
+        ann.plot_trajectory(10)
+        ann.create_trajectory(10)
         
-        ann.run()
+        #ann.run()
     #ann.hg.hg1.plot_test_point([736,12,0],"/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp")
