@@ -1231,11 +1231,11 @@ class Annotator():
         
         # y_weight = width in pixels / width in feet
         y_diff = torch.mean(torch.mean(torch.pow(boxes_im[:,[0,2],:] - boxes_im[:,[1,3],:],2), dim = 2),dim = 1).sqrt()
-        y_weight = y_diff / boxes[:,1]
+        y_weight = y_diff / boxes[:,3]
         
         # x_weight = length in pixels / legnth in feet
         x_diff = torch.mean(torch.mean(torch.pow(boxes_im[:,[0,1],:] - boxes_im[:,[2,3],:],2), dim = 2),dim = 1).sqrt()
-        x_weight = x_diff / boxes[:,0]
+        x_weight = x_diff / boxes[:,2]
 
         # 3. sort points and sensitivities by increasing timestamp
         min_ts = torch.min(boxes[:,6]).item()
@@ -1247,89 +1247,49 @@ class Annotator():
         y_weight = y_weight[order]  * interp
         x_weight = x_weight[order]  * interp
         
+        
+        # weight last point and derivative highly
+        # x_weight[[0,-1]] = 50
+        # y_weight[[0,-1]] = 50
+        # x_weight[[1,-2]] = 10
+        # y_weight[[1,-2]] = 10
+        
+        
         # # 4. fill in any gaps larger than 1/4 window_width by linear interpolation
         # gap_boxes = []
         # gap_y_weights = []
         # gap_x_weights = []
         # for i in range(1,boxes.shape[0]):       
         
+        # sum of weighted squared errors (weight applied before exponent) <= s
+        # we constrain s so s.t. on average, each box is misaligned below some threshold in pixels
+        # if target pixel error is tpe,  we say sum((w * error)**2) <= len(interp)*tpe**2
+        tpe = 4
+        x_spline = scipy.interpolate.fitpack2.UnivariateSpline(boxes[:,6],boxes[:,0],k = 3,w=x_weight,s = tpe**2*sum(interp))# w = 1/x_weight,s = 10)
+        y_spline = scipy.interpolate.fitpack2.UnivariateSpline(boxes[:,6],boxes[:,1],k = 3,w=y_weight, s = tpe**2*sum(interp))# w = 1/y_weight,s = 10000)
         
-        x_spline = scipy.interpolate.fitpack2.UnivariateSpline(boxes[:,6],boxes[:,0],k = 3,w= x_weight*20,s = 100)# w = 1/x_weight,s = 10)
-        y_spline = scipy.interpolate.fitpack2.UnivariateSpline(boxes[:,6],boxes[:,1],k = 2,w=y_weight*20, s = 1000)# w = 1/y_weight,s = 10000)
-        plt.figure()
-        plt.plot(boxes[:,6],y_spline(boxes[:,6]))
-        plt.show()
         
-        plt.figure()
-        plt.plot(boxes[:,6],x_spline(boxes[:,6]))
-        plt.show()
-        
-        # 5. iteratively, find best poly fit for local neighborhood
-        # min_neigh_idx  = 0
-        # max_neigh_idx  = 0
-        # min_window_idx = 0
-        # max_window_idx = 0
-        # min_ts = torch.min(boxes[:,6]).item()
-        # max_ts = torch.max(boxes[:,6]).item()
-        # win_mins = np.arange(min_ts,max_ts,step = stride)
-        # for win_min in win_mins:
-        #     win_max = win_min + stride
-        #     neigh_min = (win_max + win_min)/2.0 - neigh_width/2.0
-        #     neigh_max = (win_max + win_min)/2.0 + neigh_width/2.0
+        if plot:
+            fig, axs = plt.subplots(2,sharex = True,figsize = (24,18))
+            t = boxes[:,6].data.numpy()
+            axs[0].scatter(t,boxes[:,0],c = [(0,0,1)])
+            axs[1].scatter(t,boxes[:,1],c = [(0,0,1)])
+            axs[0].plot(t,x_spline(t),color = (1,0,0))#/(i%1+1))
+            axs[1].plot(t,y_spline(t),color = (1,0,0))#/(i%3+1))
             
-        #     # get all points in neighborhood
-        #     while boxes[min_neigh_idx,6] < neigh_min:
-        #         min_neigh_idx += 1
-        #     while max_neigh_idx < boxes.shape[0] and boxes[max_neigh_idx,6] < neigh_max:
-        #         max_neigh_idx += 1
+            axs[1].set(xlabel='time(s)', ylabel='Y-pos (ft)')
+            axs[0].set(ylabel='X-pos (ft)')
             
-        #     neigh_boxes = boxes[min_neigh_idx:max_neigh_idx,:]
-        #     neigh_x_weight = x_weight[min_neigh_idx:max_neigh_idx]#.data.numpy()
-        #     neigh_y_weight = y_weight[min_neigh_idx:max_neigh_idx]#.data.numpy()
+            plt.show()        
             
-        #     ts_neigh = neigh_boxes[:,6] - neigh_min#.data.numpy()
-        #     x_neigh  = neigh_boxes[:,0]#.data.numpy()
-        #     y_neigh = neigh_boxes[:,1]#.data.numpy()
+            xpe = (x_weight.data.numpy()*(x_spline(t) - boxes[:,0].data.numpy()))**2
+            ype = (y_weight.data.numpy()*(y_spline(t) - boxes[:,1].data.numpy()))**2
             
-        #     deg_x = min(x_order,neigh_boxes.shape[0]//2)
-        #     deg_y = min(y_order,neigh_boxes.shape[0]//2)
-
+            ape = np.mean(np.sqrt(xpe + ype))
+            mpe =  np.max(np.sqrt(xpe + ype))
+            print("Object {}: ape:{} px, mpe:{} px".format(idx,ape,mpe))
             
-        #     # fit best polynomial of up to x_order (depending on number of available points)
-        #     x_poly = np.polyfit(ts_neigh,x_neigh,deg_x,w= neigh_x_weight)
-        #     y_poly = np.polyfit(ts_neigh,y_neigh,deg_y,w= neigh_y_weight)
-            
-        
-        #     # sample polynomial at each unique timestamp within window
-        #     # get all points in window
-        #     while boxes[min_window_idx,6] < win_min:
-        #         min_window_idx += 1
-        #     while max_window_idx < boxes.shape[0] and boxes[max_window_idx,6] < win_max:
-        #         max_window_idx += 1
-            
-        #     # sample appropriate polynomials at relevant times
-        #     for idx in range(min_window_idx,max_window_idx):
-        #         t = boxes[idx,6] - neigh_min
-        #         x = sum([x_poly[pidx]*(t**pidx) for pidx in range(len(x_poly))])
-        #         y = sum([y_poly[pidx]*(t**pidx) for pidx in range(len(y_poly))])
-        #         #scipy.interpolate.UnivariateSpline
-                
-        #         # record foot error
-        #         xe = torch.abs(x - boxes[idx,0])
-        #         ye = torch.abs(y - boxes[idx,1])
-            
-        #         traj_x.append(x)
-        #         traj_y.append(y)
-        #         traj_ts.append(t + neigh_min)
-        #         x_err.append(xe)
-        #         y_err.append(ye)
-            
-        # 6. at end, plot results
-        #plt.plot(traj_ts,traj_x)
-        # plt.figure()
-        # plt.plot(traj_ts,traj_y)
-        # plt.plot(boxes[:,6],boxes[:,1])
-        # plt.show()
+        return [x_spline,y_spline]
             
         
         
@@ -2282,8 +2242,9 @@ if __name__ == "__main__":
         # ann.plot_all_trajectories()
         
         # ann.estimate_ts_bias()
-        ann.plot_trajectory(10)
-        ann.create_trajectory(10)
+        idx = np.random.randint(0,ann.get_unused_id())
+        ann.plot_trajectory(idx)
+        ann.create_trajectory(idx)
         
         #ann.run()
     #ann.hg.hg1.plot_test_point([736,12,0],"/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp")
