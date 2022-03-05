@@ -1,3 +1,5 @@
+import warnings
+warnings.filterwarnings("ignore")
 import numpy as np
 import os
 import cv2
@@ -12,6 +14,10 @@ import matplotlib.pyplot as plt
 import _pickle as pickle 
 import time
 import scipy
+
+import time
+
+import multiprocessing as mp
 
 from homography import Homography,Homography_Wrapper
 from datareader import Data_Reader, Camera_Wrapper
@@ -167,10 +173,8 @@ class Annotator():
         self.stride = 20
         self.plot_idx = 0
         
+
         
-
-        self.plot()
-
     
     def safe(self,x):
         """
@@ -241,7 +245,14 @@ class Annotator():
         if len(self.buffer) > self.buffer_lim:
             #self.buffer = self.buffer[1:]
             del self.buffer[0]
-            
+     
+    def fill_buffer(self,n):
+        for i in range(n):
+            self.next()
+            if i% 100 == 0: print("On frame {}".format(self.frame_idx))
+        self.plot()
+        print("Done")
+               
     def next(self):
         """
         Advance a "frame"
@@ -318,46 +329,67 @@ class Annotator():
                    directions = ["WB" if item == -1 else "EB" for item in directions]
                    camera.frame = Data_Reader.plot_labels(None,frame,im_boxes,boxes,classes,ids,speeds,directions,times)
            
+           if True: # plot splines
+               try:
+                   ts_data = list(self.spline_data[self.frame_idx].values())
+                   ts_data = list(filter(lambda x: x["camera"] == camera.name,ts_data))
+                   if True:
+                        ts_data = [self.offset_box_y(copy.deepcopy(obj),reverse = True) for obj in ts_data]
+                   if len(ts_data) > 0:
+                       boxes = torch.stack([torch.tensor([obj["x"],obj["y"],obj["l"],obj["w"],obj["h"],obj["direction"]]).float() for obj in ts_data])
+                       
+                       # convert into image space
+                       im_boxes = self.hg.state_to_im(boxes,name = camera.name)
+                        
+                       # plot on frame
+                       frame = self.hg.plot_state_boxes(frame,boxes,name = camera.name,color = (255,255,255),secondary_color = (255,255,255),thickness = 1)
+               except:
+                     pass
+            
            if self.LANES:
-                # lines = torch.tensor([[0,0,500,0,0,1],
-                #                       [0,12,500,0,0,1],
-                #                       [0,24,500,0,0,1],
-                #                       [0,36,500,0,0,1],
-                #                       [0,48,500,0,0,1]]).float()
-                # lines[:,0] = self.hg.hg1.correspondence[camera.name]["space_pts"][0][0]
-                # lines[:,1] += self.hg.hg1.correspondence[camera.name]["space_pts"][0][1]
-                # self.hg.plot_state_boxes(frame,lines,color = (0,0,255),name = camera.name)
                 
-                # lines = torch.tensor([[0,0,-500,0,0,-1],
-                #                [0,12,-500,0,0,-1],
-                #                [0,24,-500,0,0,-1],
-                #                [0,36,-500,0,0,-1],
-                #                [0,48,-500,0,0,-1]]).float()
-                # lines[:,0] = self.hg.hg2.correspondence[camera.name]["space_pts"][0][0]
-                # lines[:,1] += self.hg.hg2.correspondence[camera.name]["space_pts"][0][1]
-                # self.hg.plot_state_boxes(frame,lines,color = (0,0,255),name = camera.name)
-                # lane_lines = torch.tensor([[[801,0,0],[800,0,0]],[[0,12,0],[2000,12,0]],[[0,24,0],[2000,24,0]],[[0,36,0],[2000,36,0]],[[0,48,0],[2000,48,0]]]).float()
-                # im_lanes = self.hg.space_to_im(lane_lines,name = camera.name).int()
-                # for lane in im_lanes:
-                #     p1 = int(lane[0,0]),int(lane[0,1])
-                #     p2 = int(lane[1,0]),int(lane[1,1])
-                #     cv2.line(frame,p1,p2,(0,0,255),1)
-                
-               for direction in ["_EB","_WB"]: 
-                   # get polyline coordinates in space
-                   p2,p1,p0 = self.poly_params[camera.name+direction]
-                   x_curve = np.linspace(-3000,3000,6000)
-                   y_curve = np.power(x_curve,2)*p2 + x_curve*p1 + p0
-                   z_curve = x_curve * 0
-                   curve = np.stack([x_curve,y_curve,z_curve],axis = 1)
-                   curve = torch.from_numpy(curve).unsqueeze(1)
-                   curve_im = self.hg.space_to_im(curve,name = camera.name)
+                    
+                for direction in ["_EB","_WB"]: 
+                    
+                   for lane in [0,12,24,36,48]:
+                       # get polyline coordinates in space
+                       p2,p1,p0 = self.poly_params[camera.name+direction]
+                       x_curve = np.linspace(-3000,3000,6000)
+                       y_curve = np.power(x_curve,2)*p2 + x_curve*p1 + p0 + lane
+                       z_curve = x_curve * 0
+                       curve = np.stack([x_curve,y_curve,z_curve],axis = 1)
+                       curve = torch.from_numpy(curve).unsqueeze(1)
+                       curve_im = self.hg.space_to_im(curve,name = camera.name)
+                       
+                       mask = ((curve_im[:,:,0] > 0).int() + (curve_im[:,:,0] < 1920).int() + (curve_im[:,:,1] > 0).int() + (curve_im[:,:,1] < 1080).int()) == 4
+                       curve_im = curve_im[mask,:]
+                       
+                       curve_im = curve_im.data.numpy().astype(int)
+                       cv2.polylines(frame,[curve_im],False,(255,100,0),1)
+                  
                    
-                   mask = ((curve_im[:,:,0] > 0).int() + (curve_im[:,:,0] < 1920).int() + (curve_im[:,:,1] > 0).int() + (curve_im[:,:,1] < 1080).int()) == 4
-                   curve_im = curve_im[mask,:]
-                   
-                   curve_im = curve_im.data.numpy().astype(int)
-                   cv2.polylines(frame,[curve_im],False,(255,100,0),1)
+                   for tick in range(0,2000,10):
+                       y_curve = np.linspace(0,48,4) + p0 + p1*tick + p2*tick**2
+                       x_curve = y_curve *0 + tick
+                       z_curve = y_curve *0
+                       curve = np.stack([x_curve,y_curve,z_curve],axis = 1)
+                       curve = torch.from_numpy(curve).unsqueeze(1)
+                       curve_im = self.hg.space_to_im(curve,name = camera.name)
+                       
+                       mask = ((curve_im[:,:,0] > 0).int() + (curve_im[:,:,0] < 1920).int() + (curve_im[:,:,1] > 0).int() + (curve_im[:,:,1] < 1080).int()) == 4
+                       curve_im = curve_im[mask,:]
+                       
+                       curve_im = curve_im.data.numpy().astype(int)
+                       
+                       th = 1
+                       color = (150,150,150)
+                       if tick % 200 == 0:
+                           th = 2
+                           color = (255,100,0)
+                       elif tick % 40 == 0:
+                            th = 2
+                            
+                       cv2.polylines(frame,[curve_im],False,color,th)
                 
                    
            # print the estimated time_error for camera relative to first sequence
@@ -1007,9 +1039,9 @@ class Annotator():
             cidx = all_ids[i]
             mk = ["s","D","o"][i%3]
             
-            # axs[0].scatter(all_time[i],all_x[i],c = colors[cidx:cidx+1]/(i%3+1),marker = mk)
-            # axs[1].scatter(all_time[i],all_v[i],c = colors[cidx:cidx+1]/(i%3+1),marker = mk)
-            # axs[2].scatter(all_time[i],all_y[i],c = colors[cidx:cidx+1]/(i%3+1),marker = mk)
+            axs[0].scatter(all_time[i],all_x[i],c = colors[cidx:cidx+1]/(i%3+1),marker = mk)
+            axs[1].scatter(all_time[i],all_v[i],c = colors[cidx:cidx+1]/(i%3+1),marker = mk)
+            axs[2].scatter(all_time[i],all_y[i],c = colors[cidx:cidx+1]/(i%3+1),marker = mk)
             
             axs[0].plot(all_time[i],all_x[i],color = colors[cidx])#/(i%1+1))
             axs[1].plot(all_time[i],all_v[i],color = colors[cidx])#/(i%3+1))
@@ -1023,6 +1055,8 @@ class Annotator():
             axs[0].set(ylabel='X-pos (ft)')
 
             axs[1].set_ylim(-150,150)
+            
+            fig.suptitle("Object {}".format(obj_idx))
         
         plt.show()  
     
@@ -1099,104 +1133,20 @@ class Annotator():
         
         plt.show()  
         
-        
-        # plt.figure(figsize = (24,24))
-        # for i in range(len(all_x)):
-        #     cidx = all_ids[i]
-        #     plt.plot(all_x[i],all_y[i],color = colors[cidx])
-        # plt.xlabel("X position (ft)",fontsize = 24)
-        # plt.ylabel("Y position (ft)",fontsize = 24)
-        # plt.xlim([0,1750])
-        # plt.ylim(0,120)
-        # plt.show()
-        
     
-    # def plot_agg_velocity(self):
-    #     all_x = []
-    #     all_v = []
-    #     all_time = []
-    #     all_ids = []
-        
-    #     t0 = min(list(self.all_ts[0].values()))
-        
-
-        
-    #     for obj_idx in range(self.get_unused_id()):
-    #         x = []
-    #         y = []
-    #         v = []
-    #         time = []
-            
-    #         for cam_idx, camera in enumerate(self.cameras):
-    #             cam_name = camera.name
-            
-    #             for frame in range(0,len(self.data),10):
-    #                 key = "{}_{}".format(cam_name,obj_idx)
-    #                 item = self.data[frame].get(key)
-    #                 if item is not None:
-    #                     x.append(self.safe(item["x"]))
-    #                     y.append(self.safe(item["y"]))
-    #                     time.append(self.safe(item["timestamp"]) + self.ts_bias[cam_idx])
-                            
-           
-            
-            
-            
-    #         if len(time) > 1:
-    #             time = [item - t0 for item in time]
-                
-    #             x = [x_val for _, x_val in sorted(zip(time,x), key=lambda pair: pair[0])]
-    #             time.sort()
-                
-    #             if len(x) > 15:
-    #                 x = np.convolve(np.array(x),np.hamming(15),mode = "same")
-    #             elif len(x) > 9:
-    #                 x = np.convolve(np.array(x),np.hamming(9),mode = "same")
-                
-
-                    
-    #             # finite difference velocity estimation
-    #             v = [(x[i] - x[i-1]) / (time[i] - time[i-1] + 1e-08) for i in range(1,len(x))] 
-    #             v += [v[-1]]
-                
-    #             for i,val in enumerate(v):
-    #                 if np.abs(val) > 200:
-    #                     v[i] = v[i-1]
-                
-                
-    #             all_time.append(time)
-    #             all_v.append(v)
-    #             all_x.append(x)
-    #             all_ids.append(obj_idx)
-        
-    #     plt.figure(figsize = (20,10))
-    #     for i in range(len(all_x)):
-    #        plt.plot(all_time[i],all_v[i],color = self.colors[i])#/(i%1+1))
-        
-    #     plt.ylabel('Velocity (ft/s)')
-    #     plt.xlabel("Time (s)")
-    #     plt.ylim([-150,150])
-        
-    #     plt.show()  
-        
-    
-    def create_trajectory(self,idx,include_interp = False,y_order = 2, x_order = 3, plot = True, neigh_width = 3, stride = 1):
+    def create_trajectory(self,idx,include_interp = True,y_order = 2, x_order = 3, plot = True):
         """
         Create a unified trajectory that minimizes the MSE betweeen trajectory
         and each consitituent bounding box (error computed in image space, trajectory
         computed in 3D space). Trajectory is generated by means of a sliding window
         weighted polynomial fit. The best fit polynomial is sampled at every point for
-        which there exists a unique frame timestamp. We sample all points in a "neighborhood"
-        and use this polynomial to generate final trajectory points within a smaller "window"
+        which there exists a unique frame timestamp.
         
         idx - (int) index of unique object id for which to generate trajectory
         include_interp - (bool) if False, interpolated points are weighted lower than 
         y_order - (int > 0) order of polynomial with which to fit y coords (2 = constant acceleration)
         x_order - (int > 0) order polynomial to fit x coords (3 = constant jerk)
         plot - (bool) if True, show resulting trajectory and original trajectory
-        neigh_width (float) in seconds, the width of the sliding neighborhood
-        stride (float) in seconds, the stride of the sliding window 
-            (and how many points are "locked in" at each step)
         """
         
         # for holding final trajectory points
@@ -1209,18 +1159,24 @@ class Annotator():
         # 1. Compile all boxes from all camera views
         cameras = []
         boxes = []
-        for frame in self.data:
+        for f_idx,frame in enumerate(self.data):
+            
+            if f_idx > self.last_frame and len(self.data[f_idx]) == 0:
+                break
+            
             for cam in self.seq_keys:
+                
                 key = "{}_{}".format(cam,idx)
                 box = frame.get(key)
                 
                 if box is not None:
                     boxes.append(box)
                     cameras.append(cam)
-        
         # stack 
-        interp = torch.tensor([(0.01 if ("gen" in item.keys() and item["gen"] == "Interpolation") else 1) for item in boxes])
-        boxes = torch.stack([torch.tensor([obj["x"],obj["y"],obj["l"],obj["w"],obj["h"],obj["direction"],obj["timestamp"]],dtype = torch.double) for obj in boxes])
+        if len(boxes) == 0:
+            return [None,None,None,None,None]
+        interp = torch.tensor([(0.25 if ("gen" in item.keys() and item["gen"] == "Interpolation") else 1) for item in boxes])
+        boxes = torch.stack([torch.tensor([obj["x"],obj["y"],obj["l"],obj["w"],obj["h"],obj["direction"],obj["timestamp"]],dtype = torch.double) for i,obj in enumerate(boxes)])
         
         
         # 2. for each point, find the x/y sensitivity to change 
@@ -1239,20 +1195,23 @@ class Annotator():
 
         # 3. sort points and sensitivities by increasing timestamp
         min_ts = torch.min(boxes[:,6]).item()
-        boxes[:,6] += torch.rand(boxes[:,6].shape) * 0.001
+        max_ts = torch.max(boxes[:,6]).item()
+        duration = max_ts - min_ts
+        
         order    = boxes[:,6].sort()[1]
         boxes    = boxes[order]
-        boxes[:,6] -= min_ts 
+        #boxes[:,6] -= min_ts 
         interp   = interp[order]
         y_weight = y_weight[order]  * interp
         x_weight = x_weight[order]  * interp
         
-        
+        if duration < 3:
+            return [None,None,None,None,None]
         # weight last point and derivative highly
-        # x_weight[[0,-1]] = 50
-        # y_weight[[0,-1]] = 50
-        # x_weight[[1,-2]] = 10
-        # y_weight[[1,-2]] = 10
+        x_weight[[0,-1]] = 50
+        y_weight[[0,-1]] = 50
+        x_weight[[1,-2]] = 10
+        y_weight[[1,-2]] = 10
         
         
         # # 4. fill in any gaps larger than 1/4 window_width by linear interpolation
@@ -1264,10 +1223,63 @@ class Annotator():
         # sum of weighted squared errors (weight applied before exponent) <= s
         # we constrain s so s.t. on average, each box is misaligned below some threshold in pixels
         # if target pixel error is tpe,  we say sum((w * error)**2) <= len(interp)*tpe**2
-        tpe = 4
-        x_spline = scipy.interpolate.fitpack2.UnivariateSpline(boxes[:,6],boxes[:,0],k = 3,w=x_weight,s = tpe**2*sum(interp))# w = 1/x_weight,s = 10)
-        y_spline = scipy.interpolate.fitpack2.UnivariateSpline(boxes[:,6],boxes[:,1],k = 3,w=y_weight, s = tpe**2*sum(interp))# w = 1/y_weight,s = 10000)
         
+        # we want to continually lower tpe until max error is below a threshold, number of knots is too high, or there is no satisfying spline
+        t = boxes[:,6].data.numpy()
+
+        best_max_error = np.inf
+        best_spline = None
+        for tpex in list(np.logspace(2,0,100)):
+            x_spline = scipy.interpolate.fitpack2.UnivariateSpline(boxes[:,6],boxes[:,0],k = x_order,w=x_weight,s = tpex**2*sum(interp))
+
+            if np.isnan(x_spline(0)):
+                 continue
+            if len(x_spline.get_knots()) > np.floor(duration/2)+2:
+                continue
+            
+            else:
+                xpe = (x_weight.data.numpy()*(x_spline(t) - boxes[:,0].data.numpy()))**2
+                mpe =  np.max(np.sqrt(xpe))
+                if mpe < best_max_error:
+                    best_spline = x_spline
+                    best_max_error = mpe
+        x_spline = best_spline
+        
+        best_max_error = np.inf
+        best_spline = None
+        for tpey in list(np.logspace(2,0,100)):
+            y_spline = scipy.interpolate.fitpack2.UnivariateSpline(boxes[:,6],boxes[:,1],k = y_order,w=y_weight,s = tpey**2*sum(interp))
+            if np.isnan(y_spline(0)):
+                 continue
+            if len(y_spline.get_knots()) > np.floor(duration/2)+2:
+                continue
+            
+            else:
+                ype = (y_weight.data.numpy()*(y_spline(t) - boxes[:,1].data.numpy()))**2
+                mpe =  np.max(np.sqrt(ype))
+                if mpe < best_max_error:
+                    best_spline = y_spline
+                    best_max_error = mpe
+        y_spline = best_spline
+           
+        # tpey = 2
+        # while True:
+        #     y_spline = scipy.interpolate.fitpack2.UnivariateSpline(boxes[:,6],boxes[:,1],k = y_order,w=y_weight,s = tpey**2*sum(interp))
+        #     if np.isnan(y_spline(0)):
+        #          tpey *= 2
+        #          continue
+        #     else:
+        #         break
+        #         tpex /= 1.5
+            
+        #     if len(y_spline.get_knots()) > np.floor(duration):
+        #         break        
+            
+        xpe = (x_weight.data.numpy()*(x_spline(t) - boxes[:,0].data.numpy()))**2
+        ype = (y_weight.data.numpy()*(y_spline(t) - boxes[:,1].data.numpy()))**2
+        
+        ape = np.mean(np.sqrt(xpe + ype))
+        mpe =  np.max(np.sqrt(xpe + ype))
         
         if plot:
             fig, axs = plt.subplots(2,sharex = True,figsize = (24,18))
@@ -1281,16 +1293,169 @@ class Annotator():
             axs[0].set(ylabel='X-pos (ft)')
             
             plt.show()        
+            print("Object {}: ape:{:.2f}px, mpe:{:.2f}px".format(idx,ape,mpe))
+        
+        
+        return [t,x_spline,y_spline,ape,mpe]
+    
+    
+    def gen_trajectories(self):
+        spline_data = copy.deepcopy(self.data)
+        for idx in range(self.get_unused_id()):
+            if self.splines is None:
+                t,x_spline,y_spline,ape,mpe = self.create_trajectory(idx)
+            else:
+                x_spline,y_spline = self.splines[idx]
+            if x_spline is None: 
+                continue
+                
+            for f_idx in range(len(spline_data)):
+                for cam in self.seq_keys:
+                    key = "{}_{}".format(cam,idx)
+                    
+                    box = spline_data[f_idx].get(key)
+                    if box is not None:
+                        box["x"] = x_spline(box["timestamp"]).item()
+                        box["y"] = y_spline(box["timestamp"]).item()
             
-            xpe = (x_weight.data.numpy()*(x_spline(t) - boxes[:,0].data.numpy()))**2
-            ype = (y_weight.data.numpy()*(y_spline(t) - boxes[:,1].data.numpy()))**2
+        self.spline_data = spline_data
+      
+    def get_splines(self):
+        splines = []
+        apes = []
+        mpes = []
+        for idx in range(self.get_unused_id()):
+            t,x_spline,y_spline,ape,mpe = self.create_trajectory(idx,plot = False)
+            splines.append([x_spline,y_spline])
+            if ape is not None:
+                apes.append(ape)
+                mpes.append(mpe)
+                
+        print("Spline errors: {}px ape, {}px mpe".format(sum(apes)/len(apes),sum(mpes)/len(mpes)))    
+        self.splines = splines 
+
+    def adjust_ts_with_trajectories_mp(self,max_shift = 0.01,overwrite_ts_data = False):
+        splines = self.splines
+        
+        jobs = []
+        # for each camera, for each frame, get labels
+        for f_idx,frame_data in enumerate(self.data):
+            if f_idx > self.last_frame and len(self.data[f_idx]) == 0:
+                break 
+            for cam in self.seq_keys:
+                
+                jobs.append([frame_data,f_idx,cam,self.get_unused_id(),splines,self.hg,self.all_ts[f_idx][cam],max_shift])
             
-            ape = np.mean(np.sqrt(xpe + ype))
-            mpe =  np.max(np.sqrt(xpe + ype))
-            print("Object {}: ape:{} px, mpe:{} px".format(idx,ape,mpe))
+        start = time.time()
+        print("Started adjusting timestamps")
+        p = mp.Pool(mp.cpu_count() - 3)
+        result = p.map(get_best_ts_cam_frame,jobs)
+        print("Pool evaluation took {}s".format(time.time() - start))    
+           
+        for item in result:
+            f_idx,cam,best_time = item
+            if best_time is not None:
+                # assign best timestamp to frame and each label
+                for idx in range(self.get_unused_id()):
+                    key = "{}_{}".format(cam,idx)
+                    obj = self.data[f_idx].get(key)
+                    
+                    if obj is not None:
+                        self.data[f_idx][key]["timestamp"] = best_time
             
-        return [x_spline,y_spline]
+                if overwrite_ts_data:
+                    self.all_ts[f_idx][cam] = best_time
+
+                    
+        
+        self.get_splines()          
+                
+    def adjust_ts_with_trajectories(self,max_shift = 0.01,trials = 21,overwrite_ts_data = False):
+        splines = self.splines
+        
+        # for each camera, for each frame, get labels
+        for f_idx,frame_data in enumerate(self.data):
             
+            if f_idx % 100 == 0:
+                print("Adjusting ts for frame {}".format(f_idx))
+                
+            if f_idx > self.last_frame and len(self.data[f_idx]) == 0:
+                break 
+            for cam in self.seq_keys:
+                
+                # get all frame/camera labels
+                objs = []
+                ids = []
+                for idx in range(self.get_unused_id()):
+                    key = "{}_{}".format(cam,idx)
+                    obj = frame_data.get(key)
+                    
+                    if obj is not None:
+                        objs.append(obj)
+                        ids.append(idx)
+                
+                id_splines = [splines[id][0] for id in ids]
+        
+                
+                if len(id_splines) == 0:
+                    continue
+                
+                # get x_weights
+                boxes = torch.stack([torch.tensor([obj["x"],obj["y"],obj["l"],obj["w"],obj["h"],obj["direction"],obj["timestamp"]],dtype = torch.double) for obj in objs])
+                
+                # a one foot change in space results in a _ pixel change in image spac         
+                # convert boxes to im space - n_boxes x 8 x 2 in order: fbr,fbl,bbr,bbl,ftr,ftl,fbr,fbl
+                boxes_im = self.hg.state_to_im(boxes.float(),name = cam)
+                # x_weight = length in pixels / legnth in feet
+                x_diff = torch.mean(torch.mean(torch.pow(boxes_im[:,[0,1],:] - boxes_im[:,[2,3],:],2), dim = 2),dim = 1).sqrt()
+                x_weight = x_diff / boxes[:,2]
+                
+                
+                
+                # remove all objects without valid splines from consideration
+                keep = [True if item is not None else False for item in id_splines]
+                keep_splines = []
+                for i in range(len(keep)):
+                    if keep[i]:
+                        keep_splines.append(id_splines[i])
+                id_splines = keep_splines
+                
+                boxes = boxes[keep]
+                x_weight = x_weight[keep]
+                
+                if len(id_splines) == 0:
+                    continue
+                
+                best_time = self.all_ts[f_idx][cam]
+                best_error = np.inf
+                for shift in np.linspace(-max_shift,max_shift,trials):
+                    new_time = self.all_ts[f_idx][cam] + shift
+                
+                    # for each timestamp shift, compute the error between spline position and label position
+                    xs = torch.tensor([id_splines[i](new_time).item() for i in range(len(id_splines))])
+                    xlabel = boxes[:,0]
+                    
+                    mse = torch.mean(((xs-xlabel)*x_weight).pow(2))
+                    
+                    if mse < best_error:
+                        best_error = mse
+                        best_time = new_time
+                 
+                #print("shifted time for cam {} frame {} by {} sec".format(cam,f_idx,self.all_ts[f_idx][cam] - best_time))
+                # assign best timestamp to frame and each label
+                for idx in range(self.get_unused_id()):
+                    key = "{}_{}".format(cam,idx)
+                    obj = frame_data.get(key)
+                    
+                    if obj is not None:
+                        self.data[f_idx][key]["timestamp"] = best_time
+                
+                if overwrite_ts_data:
+                    self.all_ts[f_idx][cam] = best_time
+
+                    
+        
+        self.get_splines()
         
         
     def plot_one_lane(self,lane = (70,85)):
@@ -1457,7 +1622,7 @@ class Annotator():
     def replace_homgraphy(self):
         
         # get replacement homography
-        hid = 3
+        hid = 5
         with open("EB_homography{}.cpkl".format(hid),"rb") as f:
             hg1 = pickle.load(f) 
         with open("WB_homography{}.cpkl".format(hid),"rb") as f:
@@ -2012,7 +2177,8 @@ class Annotator():
         
         cv2.namedWindow("window")
         cv.setMouseCallback("window", self.on_mouse, 0)
-           
+        self.plot()
+        
         while(self.cont): # one frame
             
            ### handle click actions
@@ -2129,11 +2295,7 @@ class Annotator():
            elif key == ord("+"):
                print("Filling buffer. Type number of frames to buffer...")
                n = int(self.keyboard_input())  
-               for i in range(n):
-                   self.next()
-                   if i% 100 == 0: print("On frame {}".format(self.frame_idx))
-               self.plot()
-               print("Done")
+               self.fill_buffer(n)
                
            elif key == ord("?"):
                self.estimate_ts_bias()
@@ -2146,8 +2308,13 @@ class Annotator():
                self.plot()
                
            elif key == ord("p"):
-               self.plot_trajectory(obj_idx = self.plot_idx)
-               self.plot_idx += 1
+               
+               try:
+                   n = int(self.keyboard_input())
+               except:
+                   n = self.plot_idx
+               self.plot_trajectory(obj_idx = n)
+               self.plot_idx = n + 1
                
            # toggle commands
            elif key == ord("a"):
@@ -2168,8 +2335,8 @@ class Annotator():
                self.active_command = "TIME BIAS"
            elif key == ord("h"):
                self.active_command = "HOMOGRAPHY"
-           elif key == ord("p"):
-               self.active_command = "2D PASTE"
+           # elif key == ord("p"):
+           #     self.active_command = "2D PASTE"
            elif key == ord("*"):
                self.active_command = "CURVE"
            elif key == ord("&"):
@@ -2207,11 +2374,73 @@ class Annotator():
                    self.plot() 
            
            
-               
+def get_best_ts_cam_frame(args):
+        [frame_data,f_idx,cam,max_id,splines,hg,start_ts,max_shift] = args    
+        # get all frame/camera labels
+        objs = []
+        ids = []
+        for idx in range(max_id):
+            key = "{}_{}".format(cam,idx)
+            obj = frame_data.get(key)
+            
+            if obj is not None:
+                objs.append(obj)
+                ids.append(idx)
+        
+        id_splines = [splines[id][0] for id in ids]
+
+        
+        if len(id_splines) == 0:
+            return None
+        
+        # get x_weights
+        boxes = torch.stack([torch.tensor([obj["x"],obj["y"],obj["l"],obj["w"],obj["h"],obj["direction"],obj["timestamp"]],dtype = torch.double) for obj in objs])
+        
+        # a one foot change in space results in a _ pixel change in image spac         
+        # convert boxes to im space - n_boxes x 8 x 2 in order: fbr,fbl,bbr,bbl,ftr,ftl,fbr,fbl
+        boxes_im = hg.state_to_im(boxes.float(),name = cam)
+        # x_weight = length in pixels / legnth in feet
+        x_diff = torch.mean(torch.mean(torch.pow(boxes_im[:,[0,1],:] - boxes_im[:,[2,3],:],2), dim = 2),dim = 1).sqrt()
+        x_weight = x_diff / boxes[:,2]
+        
+        
+        
+        # remove all objects without valid splines from consideration
+        keep = [True if item is not None else False for item in id_splines]
+        keep_splines = []
+        for i in range(len(keep)):
+            if keep[i]:
+                keep_splines.append(id_splines[i])
+        id_splines = keep_splines
+        
+        boxes = boxes[keep]
+        x_weight = x_weight[keep]
+        
+        if len(id_splines) == 0:
+            return None
+        
+        best_time = start_ts
+        best_error = np.inf
+        for shift in np.linspace(-max_shift,max_shift,21):
+            new_time = start_ts + shift
+        
+            # for each timestamp shift, compute the error between spline position and label position
+            xs = torch.tensor([id_splines[i](new_time).item() for i in range(len(id_splines))])
+            xlabel = boxes[:,0]
+            
+            mse = torch.mean(((xs-xlabel)*x_weight).pow(2))
+            
+            if mse < best_error:
+                best_error = mse
+                best_time = new_time
+        
+        return [f_idx,cam,best_time]               
+    
+    
     
 if __name__ == "__main__":
     overwrite = False
-    scene_id = 6
+    scene_id = 4
     
     directory = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k"
     directory = "/home/worklab/Data/dataset_beta/sequence_{}".format(scene_id)
@@ -2220,31 +2449,23 @@ if __name__ == "__main__":
         ann.run()
         
     except:
-        ann = Annotator(directory,scene_id = scene_id,homography_id = 2)
-        
-        # ann.replace_timestamps()
-        
-        # ann.unbias_timestamps()
-        # ann.estimate_ts_bias()
-        # ann.plot_all_trajectories()
+        ann = Annotator(directory,scene_id = scene_id,homography_id = 2)    
 
-        #ann.replace_homgraphy()
-        #ann.est_y_error()
+        ## For prepping raw labels
+        # ann.est_y_error()
+        # ann.replace_homgraphy()
+        # ann.est_y_error()
+        # ann.replace_y()
+        # ann.est_y_error()
         
-        #ann.replace_y()
-        #ann.est_y_error()
+        ann.unbias_timestamps()
+        ann.get_splines()
+ 
+        ## For generating splines
+        for i in range(4):
+            ann.adjust_ts_with_trajectories()
+
         
-        
-        #ann.replace_timestamps()
-        #ann.plot_all_trajectories()
-        # ann.estimate_ts_bias()
-        # ann.replace_timestamps()
-        # ann.plot_all_trajectories()
-        
-        # ann.estimate_ts_bias()
-        idx = np.random.randint(0,ann.get_unused_id())
-        ann.plot_trajectory(idx)
-        ann.create_trajectory(idx)
-        
-        #ann.run()
-    #ann.hg.hg1.plot_test_point([736,12,0],"/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp")
+        ann.gen_trajectories()
+        ann.fill_buffer(500)
+        ann.run()

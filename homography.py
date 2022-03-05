@@ -900,7 +900,7 @@ class Homography_Wrapper():
         
 
 # basic test code
-if False and __name__ == "__main__":
+if True and __name__ == "__main__":
     
     camera_name = "p2c4"
     
@@ -908,36 +908,36 @@ if False and __name__ == "__main__":
     point_path = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform/{}_im_lmcs_transform_points.csv".format(camera_name)
     
     
-    # get some data
-    data_file = "/home/worklab/Data/dataset_alpha/manual_correction/rectified_{}_0_track_outputs_3D.csv".format(camera_name)
-    labels,data = load_i24_csv(data_file)
-    frame_data = data[0]
-    # convert labels from first frame into tensor form
-    boxes = []
-    classes = []
-    for item in frame_data:
-        if len(item[11]) > 0:
-            boxes.append(np.array(item[11:27]).astype(float))
-            classes.append(item[3])
-    boxes = torch.from_numpy(np.stack(boxes))
-    boxes = torch.stack((boxes[:,::2],boxes[:,1::2]),dim = -1)
+    # # get some data
+    # data_file = "/home/worklab/Data/dataset_alpha/manual_correction/rectified_{}_0_track_outputs_3D.csv".format(camera_name)
+    # labels,data = load_i24_csv(data_file)
+    # frame_data = data[0]
+    # # convert labels from first frame into tensor form
+    # boxes = []
+    # classes = []
+    # for item in frame_data:
+    #     if len(item[11]) > 0:
+    #         boxes.append(np.array(item[11:27]).astype(float))
+    #         classes.append(item[3])
+    # boxes = torch.from_numpy(np.stack(boxes))
+    # boxes = torch.stack((boxes[:,::2],boxes[:,1::2]),dim = -1)
     
-    # get first frame from sequence
-    sequence = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/{}_0.mp4".format(camera_name)
+    # # get first frame from sequence
+    # sequence = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments/{}_0.mp4".format(camera_name)
     
-    cap = cv2.VideoCapture(sequence)
-    _,frame = cap.read()
+    # cap = cv2.VideoCapture(sequence)
+    # _,frame = cap.read()
     
     
-    # test homography
-    hg = Homography()
-    hg.add_i24_camera(point_path,vp_path,camera_name)
+    # # test homography
+    # hg = Homography()
+    # hg.add_i24_camera(point_path,vp_path,camera_name)
     
-    # fit P and evaluate
-    # heights = hg.guess_heights(classes)
-    # hg.scale_Z(boxes,heights,name = camera_name)
-    # hg.test_transformation(boxes,classes,camera_name,frame)
-    del hg
+    # # fit P and evaluate
+    # # heights = hg.guess_heights(classes)
+    # # hg.scale_Z(boxes,heights,name = camera_name)
+    # # hg.test_transformation(boxes,classes,camera_name,frame)
+    # del hg
     
     # plot test points
     im_dir = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/vp"
@@ -945,9 +945,9 @@ if False and __name__ == "__main__":
     # hg.plot_test_point([800,108,0],im_dir)
     
     # test Homography Wrapper
-    directory = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform4"
-    hg1 = get_homographies(save_file = "EB_homography3.cpkl",directory = directory,direction = "EB",fit_Z = False)
-    hg2 = get_homographies(save_file = "WB_homography3.cpkl",directory = directory,direction = "WB",fit_Z = False)
+    directory = "/home/worklab/Documents/derek/i24-dataset-gen/DATA/tform5"
+    hg1 = get_homographies(save_file = "EB_homography5.cpkl",directory = directory,direction = "EB",fit_Z = False)
+    hg2 = get_homographies(save_file = "WB_homography5.cpkl",directory = directory,direction = "WB",fit_Z = False)
     
     hgw = Homography_Wrapper(hg1 = hg1,hg2 = hg2)
     
