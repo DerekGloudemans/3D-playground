@@ -260,12 +260,12 @@ class Data_Reader():
                 time = times
             
             label = "{} {}:".format(classes[i],ids[i])          
-            label2 = "{:.1f}mph {}".format(speeds[i],directions[i])   
+            #label2 = "{:.1f}mph {}".format(speeds[i],directions[i])   
             label3 = "L: {:.1f}ft".format(state_boxes[i][2])
             label4 = "W: {:.1f}ft".format(state_boxes[i][3])
             label5 = "H: {:.1f}ft".format(state_boxes[i][4])
             label6 = "{}".format(time)
-            full_label = [label,label2,label3,label4,label5,label6]
+            full_label = [label,label3,label4,label5,label6]
             
             longest_label = max([item for item in full_label],key = len)
             

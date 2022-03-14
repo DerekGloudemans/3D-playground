@@ -861,7 +861,7 @@ class Homography_Wrapper():
     def state_to_im(self,points,name = None):
         return self.space_to_im(self.state_to_space(points),name = name)
     
-    def plot_state_boxes(self,im,boxes,name = None, color = (255,255,255),secondary_color = None,labels = None,thickness = 1):
+    def plot_state_boxes(self,im,boxes,name = None, color = (255,255,255),secondary_color = None,labels = None,thickness = 1,jitter_px = 0):
         """
         im - cv2 image
         boxes - [d,s] boxes in state formulation
@@ -879,6 +879,8 @@ class Homography_Wrapper():
         boxes1 = boxes[ind,:]
         if len(boxes1) > 0:
             im_boxes1 = self.state_to_im(boxes1,name = name)
+            jitter = (torch.rand([im_boxes1.shape[0],1,1])*2 -1) * jitter_px
+            im_boxes1 += jitter.expand(im_boxes1.shape[0],8,2)
             im = self.hg2.plot_boxes(im,im_boxes1,color = secondary_color,labels = labels1,thickness = thickness)
         
         # plot objects that are best fit by hg1
@@ -891,6 +893,9 @@ class Homography_Wrapper():
         boxes2 = boxes[ind,:]
         if len(boxes2) > 0:
             im_boxes2 = self.state_to_im(boxes2,name = name)
+            
+            jitter = (torch.rand([im_boxes2.shape[0],1,1])*2 -1) * jitter_px
+            im_boxes2 += jitter.expand(im_boxes2.shape[0],8,2)
             im = self.hg1.plot_boxes(im,im_boxes2,color = color,labels = labels2,thickness = thickness)
 
         return im

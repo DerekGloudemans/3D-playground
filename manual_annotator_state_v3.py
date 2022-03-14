@@ -17,7 +17,7 @@ import time
 import scipy
 
 import time
-
+import random
 import argparse
 
 from homography import Homography,Homography_Wrapper
@@ -141,7 +141,7 @@ class Annotator():
         # get first frames from each camera according to first frame of data
         self.buffer_frame_idx = -1
         self.buffer_lim = 2700
-        self.last_frame = 3600
+        self.last_frame = 2700
         self.buffer = []
         
         self.frame_idx = 0
@@ -174,6 +174,22 @@ class Annotator():
         self.stride = 20
         self.plot_idx = 0
         
+        
+        ranges = {}
+        extended_boxes = dict([(camera.name,0) for camera in self.cameras])
+        
+        for cam in self.cameras:
+            cam = cam.name
+            
+            space_pts1 = self.hg.hg1.correspondence[cam]["space_pts"]
+            space_pts2 = self.hg.hg2.correspondence[cam]["space_pts"]
+            space_pts = np.concatenate((space_pts1,space_pts2),axis = 0)
+    
+            minx = np.min(space_pts[:,0])
+            maxx = np.max(space_pts[:,0])
+            
+            ranges[cam] = [minx,maxx]
+        self.ranges = ranges
 
         
     
@@ -293,8 +309,9 @@ class Annotator():
         else:
             print("Cannot return to previous frame. First frame or buffer limit")
                         
-    def plot(self):        
+    def plot(self,extension_distance = 200):        
         plot_frames = []
+        ranges = self.ranges
         
         for i in range(self.active_cam, self.active_cam+2):
            camera = self.cameras[i]
@@ -307,6 +324,9 @@ class Annotator():
            # stack objects as tensor and aggregate other data for label
            ts_data = list(self.data[self.frame_idx].values())
            ts_data = list(filter(lambda x: x["camera"] == camera.name,ts_data))
+           
+           #ts_data = list(filter(lambda x: x["id"] == self.get_unused_id() - 1,ts_data))
+
            if True:
                 ts_data = [self.offset_box_y(copy.deepcopy(obj),reverse = True) for obj in ts_data]
            ids = [item["id"] for item in ts_data]
@@ -317,7 +337,7 @@ class Annotator():
                im_boxes = self.hg.state_to_im(boxes,name = camera.name)
                 
                # plot on frame
-               frame = self.hg.plot_state_boxes(frame,boxes,name = camera.name,color = (0,255,0),secondary_color = (0,255,0),thickness = 3)
+               frame = self.hg.plot_state_boxes(frame,boxes,name = camera.name,color = (0,255,0),secondary_color = (0,255,0),thickness = 2,jitter_px = 0)
     
                
                # plot labels
@@ -325,12 +345,11 @@ class Annotator():
                    times = [item["timestamp"] for item in ts_data]
                    classes = [item["class"] for item in ts_data]
                    ids = [item["id"] for item in ts_data]
-                   speeds = [0.0 for item in ts_data]  # in mph
                    directions = [item["direction"] for item in ts_data]
                    directions = ["WB" if item == -1 else "EB" for item in directions]
-                   camera.frame = Data_Reader.plot_labels(None,frame,im_boxes,boxes,classes,ids,speeds,directions,times)
+                   camera.frame = Data_Reader.plot_labels(None,frame,im_boxes,boxes,classes,ids,None,directions,times)
            
-           if True: # plot splines
+           if False and "c3" not in camera.name and "c4" not in camera.name: # plot splines
                times = [item["timestamp"] for item in ts_data]
                plot_spline_boxes = []
                # get objects visible in adjacent cameras (2 in each direction)
@@ -349,7 +368,9 @@ class Annotator():
                    else:
                        obj["x"] = x_spline([times[0]])[0]
                        obj["y"] = y_spline([times[0]])[0]
-                       plot_spline_boxes.append(obj)
+                       
+                   if obj["x"] > ranges[camera.name][0] - extension_distance and obj["x"] < ranges[camera.name][1] + extension_distance: 
+                           plot_spline_boxes.append(obj)
                if len(plot_spline_boxes) > 0:
                    boxes2 = torch.stack([torch.tensor([obj["x"],obj["y"],obj["l"],obj["w"],obj["h"],obj["direction"]]).float() for obj in plot_spline_boxes])
                    im_boxes2 = self.hg.state_to_im(boxes2,name = camera.name)
@@ -357,7 +378,7 @@ class Annotator():
                    keep = (torch.max(im_boxes2[:,:,0],dim = 1)[0] < 1920).int() * (torch.min(im_boxes2[:,:,0],dim = 1)[0] > 0).int() * (torch.max(im_boxes2[:,:,1],dim = 1)[0] < 1080).int() * (torch.max(im_boxes2[:,:,0],dim = 1)[1] > 0).int()
                    boxes2 = boxes2[keep.nonzero().squeeze(1)]
                    if len(boxes2) > 0:
-                       frame = self.hg.plot_state_boxes(frame,boxes2,name = camera.name,color = (255,190,0),secondary_color = (255,190,0),thickness = 3)
+                       frame = self.hg.plot_state_boxes(frame,boxes2,name = camera.name,color = (255,190,0),secondary_color = (255,190,0),thickness = 1)
 
                
                # try:
@@ -432,7 +453,6 @@ class Annotator():
            # frame = cv2.putText(frame, error_label, (20,60), cv2.FONT_HERSHEY_PLAIN,text_size, [1,1,1], 2)
            # frame = cv2.putText(frame, error_label, (20,60), cv2.FONT_HERSHEY_PLAIN,text_size, [0,0,0], 1)
            
-           cv2.imwrite("{}.png".format(camera.name),frame)
            
            plot_frames.append(frame)
        
@@ -452,10 +472,23 @@ class Annotator():
         # view frame and if necessary write to file
         cat_im /= 255.0
         self.plot_frame = cat_im
+        
+    def output_vid(self):
+        self.LANES = False
+        
+        while self.frame_idx < self.last_frame:
+            self.plot()
+            
+            resize_im = cv2.resize(self.plot_frame*255,(3840,2160))
+            cv2.imwrite("video/{}/{}.png".format(self.scene_id,str(self.frame_idx).zfill(4)),resize_im)
+
+            self.next()
 
     def add(self,obj_idx,location):
         
         xy = self.box_to_state(location)[0,:].data.numpy()
+        
+        
         
         # create new object
         obj = {
@@ -471,6 +504,14 @@ class Annotator():
             "camera":self.clicked_camera,
             "gen":"Manual"
             }
+        
+        # try:
+        #     key = "{}_{}".format(self.clicked_camera,obj_idx-1)
+        #     obj["l"] = self.data[self.frame_idx][key]["l"]
+        #     obj["w"] = self.data[self.frame_idx][key]["w"]
+        #     obj["h"] = self.data[self.frame_idx][key]["h"]
+        # except:
+        #     pass
         
         key = "{}_{}".format(self.clicked_camera,obj_idx)
         self.data[self.frame_idx][key] = obj
@@ -1332,15 +1373,29 @@ class Annotator():
         if plot:
             fig, axs = plt.subplots(2,sharex = True,figsize = (24,18))
             t = boxes[:,6].data.numpy()
-            axs[0].scatter(t,boxes[:,0],c = [(0,0,1)])
-            axs[1].scatter(t,boxes[:,1],c = [(0,0,1)])
+            t2 = t - min_ts
+            axs[0].scatter(t2,boxes[:,0],c = [(0.8,0.3,0)])
+            axs[1].scatter(t2,boxes[:,1],c = [(0.8,0.3,0)])
             t = np.linspace(min_ts,max_ts,1000)
-            axs[0].plot(t,x_spline(t),color = (1,0,0))#/(i%1+1))
-            axs[1].plot(t,y_spline(t),color = (1,0,0))#/(i%3+1))
+            t2 = t - min_ts
+            axs[0].plot(t2,x_spline(t),color = (0,0,0.8),linewidth = 2)#/(i%1+1))
+            axs[1].plot(t2,y_spline(t),color = (0,0.6,0),linewidth = 2)#/(i%3+1))
             
-            axs[1].set(xlabel='time(s)', ylabel='Y-pos (ft)')
-            axs[0].set(ylabel='X-pos (ft)')
+            axs[0].set_ylabel("X-position (ft)", fontsize = 24)
+            axs[1].set_ylabel("Y-position (ft)", fontsize = 24)
+            axs[1].set_xlabel("time (s)", fontsize = 24)
+
+
+            #axs[0].set(ylabel='X-pos (ft)',fontsize = 24)
+            axs[0].tick_params(axis='x', labelsize=18 )
+            axs[0].tick_params(axis='y', labelsize=18 )
+            axs[1].tick_params(axis='x', labelsize=18 )
+            axs[1].tick_params(axis='y', labelsize=18 )
             
+            axs[0].set_xlim([0,60])
+            axs[1].set_xlim([0,60])
+            plt.subplots_adjust(hspace=0.02)
+            plt.savefig("splines{}.pdf".format(idx))
             plt.show()        
         
         
@@ -1368,7 +1423,7 @@ class Annotator():
             
         self.spline_data = spline_data
       
-    def get_splines(self,plot = False,metric = "mpe"):
+    def get_splines(self,plot = True,metric = "mpe"):
         splines = []
         apes = []
         ases = []
@@ -1386,7 +1441,7 @@ class Annotator():
         """
         Adjust each box by up to max_shift pixels in x and y direction towards the best-fit spline
         """               
-        
+        pixel_shifts = []
         try:
             self.splines
         except:
@@ -1452,9 +1507,12 @@ class Annotator():
                     # move box either to spline or to x_lim
                     key = "{}_{}".format(cameras[i],ids[i])
                     frame_data[key]["y"] += y_diff
+                    
+                    pixel_shifts.append(np.sqrt(x_diff**2 + y_diff**2))
             
             if verbose and (f_idx %100 == 0): print("Adusted boxes for frame {}".format(f_idx))
             
+        return pixel_shifts
            
                         
     def adjust_ts_with_trajectories(self,max_shift = 0.01,trials = 21,overwrite_ts_data = False,metric = "ape", use_running_error = True,verbose = True):
@@ -2713,7 +2771,97 @@ class Annotator():
                             p_errors.append(px_diff.item())
                             
         return x_errors,y_errors,p_errors
+      
         
+    def count_extended_data(self,extension_distance = 200):
+        # get min and max range for camera objects
+        ranges = {}
+        extended_boxes = dict([(camera.name,0) for camera in self.cameras])
+        
+        for cam in self.cameras:
+            cam = cam.name
+            
+            space_pts1 = self.hg.hg1.correspondence[cam]["space_pts"]
+            space_pts2 = self.hg.hg2.correspondence[cam]["space_pts"]
+            space_pts = np.concatenate((space_pts1,space_pts2),axis = 0)
+    
+            minx = np.min(space_pts[:,0])
+            maxx = np.max(space_pts[:,0])
+            
+            ranges[cam] = [minx,maxx]
+            
+        
+        for f_idx in range(len(self.data)):
+            if f_idx % 100 == 0:
+                print("On frame {}".format(f_idx))
+            
+            if len(self.data[f_idx]) == 0:
+                break
+            
+            for camera in self.cameras:
+                cam = camera.name
+                if "c4" in cam or "c3" in cam: # cross-lane stuff is no good for these
+                    continue
+                
+                ts_data = list(self.data[self.frame_idx].values())
+                ts_data = list(filter(lambda x: x["camera"] == cam,ts_data))
+                ids = [item["id"] for item in ts_data]
+                
+                if len(ts_data) == 0: # need to get timestamp for frame to extend
+                    continue
+                time = ts_data[0]["timestamp"]
+                    
+                
+                ts_data2 = list(self.data[self.frame_idx].values())
+                keep_boxes = []
+                keep_ids = []
+                
+                for obj in ts_data2:
+                   id = obj["id"]
+                   if id in ids or id in keep_ids:
+                       continue
+                   x_spline,y_spline = self.splines[id]
+                   if x_spline is None or y_spline is None:
+                       continue
+                   else:
+                       obj["x"] = x_spline([time])[0]
+                       obj["y"] = y_spline([time])[0]
+                       
+                       if obj["x"] > ranges[cam][0] - extension_distance and obj["x"] < ranges[cam][1] + extension_distance:
+                           keep_boxes.append(obj)
+                           keep_ids.append(id)
+                if len(keep_boxes) > 0:
+                   boxes2 = torch.stack([torch.tensor([obj["x"],obj["y"],obj["l"],obj["w"],obj["h"],obj["direction"]]).float() for obj in keep_boxes])
+                   im_boxes2 = self.hg.state_to_im(boxes2,name = camera.name)
+                   
+                   keep = (torch.max(im_boxes2[:,:,0],dim = 1)[0] < 1920).int() * (torch.min(im_boxes2[:,:,0],dim = 1)[0] > 0).int() * (torch.max(im_boxes2[:,:,1],dim = 1)[0] < 1080).int() * (torch.max(im_boxes2[:,:,0],dim = 1)[1] > 0).int()
+                   boxes2 = boxes2[keep.nonzero().squeeze(1)]
+                   if len(boxes2) > 0:
+                       extended_boxes[cam] += boxes2.shape[0]
+           
+        return extended_boxes    
+
+        
+        # for each frame
+        
+        # for each camera
+        
+        # get the set of all objects
+        
+        # get the set of objects in that camera and remove
+        
+        
+        # of the remaining objects, get spline position for each
+        
+        # remove objects outside of extension range
+        
+        # convert to image space
+        
+        # verify that at least 4 corners fall within camera
+        
+        # increment counter
+    
+
     def run(self):
         """
         Main processing loop
@@ -2980,25 +3128,27 @@ def plot_proj_error(all_errors,bins = 100,cutoff_error = 20,names = []):
     plt.show()
     
     
-def plot_histograms(cutoff_error = [5,3],n_bins =30):
+def plot_histograms(cutoff_error = [3,2],n_bins =30):
     
     # for pixel moving plot
-    # rescale = 7
-    # colors = np.array([[1,0,0],[1,0,0],[0.5,0,0.5],[0,0,1],[0,0.7,0.7],[0.2,0.6,0.2],[0,0,0],[0,0,0],[0,0,0]])
-    # directory = "histogram_data2"
-    # includex = [0,1,1,1,1,1,0,0,0]
-    # includey = [1,0,1,1,1,1,0,0,0]    
-    # llx      = [20,20,35,45,110,105,0,0,0]
-    # lly      = [20,20,50,115,105,75,0,0,0]
-    
-    rescale = 1
-    rot = 45
-    colors = np.array([[0.2,0.5,0.2],[1,0,0],[0.5,0,0.5],[0,0,1],[0,0.7,0.7],[0.2,0.6,0.2],[0,0,0],[0,0,0],[0,0,0]])
-    directory = "histogram_data2"
-    includex = [1,1,0,1,0,0]
-    includey = [1,1,1,0,0,0]   
+    rescale = 7
+    colors = np.array([[1,0,0],[0.5,0,0.5],[1,0,1],[0,0,1],[0.3,0.2,0.9],[0,0.5,0.5],[0,0.7,0.2],[.3,1,0],[0,1,0]])
+    directory = "histogram_data3"
+    includex = [1,0,1,1,1,1,1,1,0,0]
+    includey = [1,1,0,0,1,1,1,1,0,0]   
+    includep = [1,1,1,1,1,1,1,1,0,0]
     llx      = [20,20,35,45,110,105,0,0,0]
     lly      = [20,20,50,115,105,75,0,0,0]
+    llp      = [20,20,50,115,105,75,0,0,0]
+    
+    rescale = 5
+    rot = 45
+    # colors = np.array([[0.2,0.5,0.2],[1,0,0],[0.5,0,0.5],[0,0,1],[0,0.7,0.7],[0.2,0.6,0.2],[0,0,0],[0,0,0],[0,0,0]])
+    # directory = "histogram_data"
+    # includex = [1,1,0,1,0,0]
+    # includey = [1,1,1,0,0,0]   
+    # llx      = [20,20,35,45,110,105,0,0,0]
+    # lly      = [20,20,50,115,105,75,0,0,0]
     
     xmeans1    = []
     ymeans1    = []
@@ -3018,11 +3168,14 @@ def plot_histograms(cutoff_error = [5,3],n_bins =30):
         # get data
         path = os.path.join(directory,file)
         
-        name = path.split("/")[-1].split(".")[0][2:]
+        name = path.split("/")[-1].split(".")[0][4:]
         name = name.replace("_"," ")
-            
-        with open(path,"rb") as f:
-            [x_err,y_err,_] = pickle.load(f)
+        
+        try:
+            with open(path,"rb") as f:
+                [x_err,y_err,p_err,_,_,_] = pickle.load(f)
+        except:
+            continue
             
         # plot x data
         clipped = 0
@@ -3035,7 +3188,7 @@ def plot_histograms(cutoff_error = [5,3],n_bins =30):
             maxv = max(x_err)
             cutoff = cutoff_error[0]
             
-            ran = np.linspace(minv,cutoff+0.04,n_bins)
+            ran = np.linspace(minv,cutoff+0.1,n_bins)
             count = np.zeros(ran.shape)
             
             for item in x_err:
@@ -3084,7 +3237,7 @@ def plot_histograms(cutoff_error = [5,3],n_bins =30):
             maxv = max(y_err)
             cutoff = cutoff_error[1]
             
-            ran = np.linspace(minv,cutoff+0.04,n_bins)
+            ran = np.linspace(minv,cutoff+.1,n_bins)
             count = np.zeros(ran.shape)
             
             for item in y_err:
@@ -3167,6 +3320,275 @@ def plot_histograms(cutoff_error = [5,3],n_bins =30):
 
     axs[0].legend(legend1,fontsize = 14)
     axs[1].legend(legend2,fontsize = 14)
+
+    
+    plt.savefig("histogram.pdf",bbox_inches="tight")
+    plt.show()
+
+def plot_histograms2(cutoff_error = [3,1.5,25],n_bins =30):
+    
+    # for pixel moving plot
+    colors = np.array([[1,0,0],[0.5,0,0.5],[1,0,1],[0,0,1],[0.3,0.2,0.9],[0,0.5,0.5],[0.6,0.7,0.4],[.3,1,0],[0,1,0]])
+    directory = "histogram_data3"
+    includex = [0,0,0,1,1,1,1,1,0,0]
+    includey = [0,0,0,1,1,1,1,1,0,0]   
+    includep = [0,0,0,1,1,1,1,1,0,0]
+    llx      = [20,10,20,40,50,80,50,140,20]
+    lly      = [20,20,20,20,35,55,160,60,20]
+    llp      = [20,40,10,30,40,130,80,160,50]
+    
+    rescale = 5
+    rot = 70
+    # colors = np.array([[0.2,0.5,0.2],[1,0,0],[0.5,0,0.5],[0,0,1],[0,0.7,0.7],[0.2,0.6,0.2],[0,0,0],[0,0,0],[0,0,0]])
+    # directory = "histogram_data"
+    # includex = [1,1,0,1,0,0]
+    # includey = [1,1,1,0,0,0]   
+    # llx      = [20,20,35,45,110,105,0,0,0]
+    # lly      = [20,20,50,115,105,75,0,0,0]
+    
+    xmeans1    = []
+    ymeans1    = []
+    count_max1 = []
+    xmeans2    = []
+    ymeans2    = []
+    count_max2 = []
+    xmeans3    = []
+    ymeans3    = []
+    count_max3 = []
+    
+    
+    legend1 = []
+    legend2 = []
+    legend3 = []
+    fig, axs = plt.subplots(1, 3,figsize = (21,5))
+    paths = os.listdir(directory)
+    paths.sort()
+    
+    for f_idx,file in enumerate(paths):
+        # get data
+        path = os.path.join(directory,file)
+        
+        name = path.split("/")[-1].split(".")[0][4:]
+        name = name.replace("_"," ")
+        
+        try:
+            with open(path,"rb") as f:
+                [x_err,y_err,p_err,_,_,_] = pickle.load(f)
+        except:
+            with open(path,"rb") as f:
+                [x_err,y_err,p_err,_,_] = pickle.load(f)
+            
+        # plot x data
+        clipped = 0
+        if includex[f_idx]:
+            
+
+            
+            # plot histogram
+            minv = 0
+            maxv = max(x_err)
+            cutoff = cutoff_error[0]
+            
+            ran = np.linspace(minv,cutoff+0.1,n_bins)
+            count = np.zeros(ran.shape)
+            
+            for item in x_err:
+                binned = False
+                for r in range(1,len(ran)):
+                    if item >= ran[r-1] and item < ran[r]:
+                        count[r-1] += 1
+                        binned = True
+                        break
+                if not binned and item > ran[-1]:
+                    clipped += 1
+            count /= len(x_err)
+    
+            # remove all 0 bins
+            #ran = ran[np.where(count > 0)]
+            #count = count[np.where(count > 0)]
+            
+            axs[0].plot(ran,count*rescale,c = colors[f_idx])
+            
+            mean = sum(x_err)/len(x_err)
+            # find closest bin
+            idx = 0
+            while mean > ran[idx]:
+                idx += 1
+                #print(mean,idx,ran[idx],count[idx])
+                
+            ratio = (mean-ran[idx-1])/(ran[idx] -ran[idx-1])
+            ymeans1.append((count[idx]*ratio+count[idx-1]*(1-ratio)))
+            xmeans1.append(mean)
+            m = np.max(count)
+            count_max1.append(m)
+            clip_percent = int((1-clipped/len(x_err)) * 1000)/10
+            legend1.append("{} ({:.1f}%)".format(name,clip_percent))
+            
+        else:
+            ymeans1.append(0)
+            xmeans1.append(0)
+            count_max1.append(0)
+            
+        # plot y data
+        clipped = 0
+        if includey[f_idx]:
+            
+            # plot histogram
+            minv = 0
+            maxv = max(y_err)
+            cutoff = cutoff_error[1]
+            
+            ran = np.linspace(minv,cutoff+.1,n_bins)
+            count = np.zeros(ran.shape)
+            
+            for item in y_err:
+                binned = False
+                for r in range(1,len(ran)):
+                    if item >= ran[r-1] and item < ran[r]:
+                        count[r-1] += 1
+                        binned = True
+                        break
+                if not binned:
+                    clipped += 1
+            count /= len(y_err)
+            # remove all 0 bins
+            # ran = ran[np.where(count > 0)]
+            # count = count[np.where(count > 0)]
+            
+            axs[1].plot(ran,count*rescale,c = colors[f_idx])
+            
+            mean = sum(y_err)/len(y_err)
+            # find closest bin
+            idx = 0
+            while mean > ran[idx]:
+                idx += 1
+                #print(mean,idx,ran[idx],count[idx])
+            ratio = (mean-ran[idx-1])/(ran[idx] -ran[idx-1])
+            ymeans2.append((count[idx]*ratio+count[idx-1]*(1-ratio)))
+            xmeans2.append(mean)
+            m = np.max(count)
+            count_max2.append(m)
+            clip_percent = int((1-clipped/len(y_err)) * 1000)/10
+            legend2.append("{} ({:.1f}%)".format(name,clip_percent))
+        else:
+            ymeans2.append(0)
+            xmeans2.append(0)
+            count_max2.append(0)
+            
+        
+        # plot pixel data
+        clipped = 0
+        if includep[f_idx]:
+            
+            # plot histogram
+            minv = 0
+            maxv = max(p_err)
+            cutoff = cutoff_error[2]
+            
+            ran = np.linspace(minv,cutoff+1,n_bins)
+            count = np.zeros(ran.shape)
+            
+            for item in p_err:
+                binned = False
+                for r in range(1,len(ran)):
+                    if item >= ran[r-1] and item < ran[r]:
+                        count[r-1] += 1
+                        binned = True
+                        break
+                if not binned:
+                    clipped += 1
+            count /= len(p_err)
+            # remove all 0 bins
+            # ran = ran[np.where(count > 0)]
+            # count = count[np.where(count > 0)]
+            
+            axs[2].plot(ran,count*rescale,c = colors[f_idx])
+            
+            mean = sum(p_err)/len(p_err)
+            # find closest bin
+            idx = 0
+            while mean > ran[idx]:
+                idx += 1
+                #print(mean,idx,ran[idx],count[idx])
+            ratio = (mean-ran[idx-1])/(ran[idx] -ran[idx-1])
+            ymeans3.append((count[idx]*ratio+count[idx-1]*(1-ratio)))
+            xmeans3.append(mean)
+            m = np.max(count)
+            count_max3.append(m)
+            clip_percent = int((1-clipped/len(p_err)) * 1000)/10
+            legend3.append("{} ({:.1f}%)".format(name,clip_percent))
+        else:
+            ymeans3.append(0)
+            xmeans3.append(0)
+            count_max3.append(0)
+            
+
+    # plot x means
+    for i in range(len(paths)):
+        if includex[i]:
+            axs[0].annotate("{:.2f} ft".format(xmeans1[i]),
+                            xycoords='data',
+                            xy=(xmeans1[i],min(ymeans1[i]*rescale,0.5)),
+                            textcoords='offset points',
+                            xytext=(xmeans1[i]+llx[i]*np.cos(np.pi/180*rot),ymeans1[i]+llx[i]*np.sin(np.pi/180*rot)),
+                            arrowprops=dict(arrowstyle='-', color='black'),
+                            rotation= rot,
+                            fontsize = 14)
+            axs[0].axvline(x = xmeans1[i],ymax = ymeans1[i]/max(count_max1)*rescale,ls = ":",c = colors[i],label='_nolegend_')
+            
+    # plot y means
+    for i in range(len(paths)):
+        if includey[i]:
+            axs[1].annotate("{:.2f} ft".format(xmeans2[i]),
+                            xycoords='data',
+                            xy=(xmeans2[i],min(ymeans2[i]*rescale,0.5)),
+                            textcoords='offset points',
+                            xytext=(xmeans2[i]+lly[i]*np.cos(np.pi/180*rot),ymeans2[i]+lly[i]*np.sin(np.pi/180*rot)),
+                            arrowprops=dict(arrowstyle='-', color='black'),
+                            rotation= rot,
+                            fontsize = 14)
+            axs[1].axvline(x = xmeans2[i],ymax = ymeans2[i]/max(count_max2)*rescale,ls = ":",c = colors[i],label='_nolegend_')
+            
+    # plot p means
+    for i in range(len(paths)):
+        rot = 65
+        if includep[i]:
+            axs[2].annotate("{:.1f} px".format(xmeans3[i]),
+                            xycoords='data',
+                            xy=(xmeans3[i],min(ymeans3[i]*rescale,0.5)),
+                            textcoords='offset points',
+                            xytext=(xmeans3[i]+llp[i]*np.cos(np.pi/180*rot),ymeans3[i]+llp[i]*np.sin(np.pi/180*rot)),
+                            arrowprops=dict(arrowstyle='-', color='black'),
+                            rotation= rot,
+                            fontsize = 14)
+            axs[2].axvline(x = xmeans3[i],ymax = ymeans3[i]/max(count_max3)*rescale,ls = ":",c = colors[i],label='_nolegend_')
+        
+    axs[0].set_xlim([0,cutoff_error[0]])
+    axs[0].set_ylim([0,np.max(count_max1)])
+    axs[1].set_xlim([0,cutoff_error[1]])
+    axs[1].set_ylim([0,np.max(count_max2)])
+    axs[2].set_xlim([0,cutoff_error[2]])
+    axs[2].set_ylim([0,np.max(count_max3)])
+    
+    axs[0].set_yticks([])
+    axs[1].set_yticks([])
+    axs[2].set_yticks([])
+    axs[0].xaxis.set_tick_params(labelsize=14)
+    axs[1].xaxis.set_tick_params(labelsize=14)
+    axs[2].xaxis.set_tick_params(labelsize=14)
+
+    
+    axs[0].set_ylabel("Relative frequency", fontsize = 18)
+    axs[0].set_xlabel("a.) Cross-camera x-error (ft)", fontsize = 24)
+    axs[1].set_xlabel("b.) Cross-camera y-error (ft)", fontsize = 24)
+    axs[2].set_xlabel("c.) Cross-camera pixel error", fontsize = 24)
+
+
+    plt.subplots_adjust(wspace=0.1, hspace=0)
+
+    axs[0].legend(legend1,fontsize = 14)
+    axs[1].legend(legend2,fontsize = 14)
+    axs[2].legend(legend3,fontsize = 14)
 
     
     plt.savefig("histogram.pdf",bbox_inches="tight")
@@ -3556,9 +3978,50 @@ def calculate_feasibility(ann):
                 f_percentage.append(percent_feasible)
     return f_percentage
 
-            
+def annotator_rmse(ann):
+        mses = []
         
+        i = 0
+        obj_annotations = []
+        cam = None
+        while i < ann.get_unused_id():
+            for frame_data in ann.data:
+                for obj in frame_data.values():
+                    if obj["id"] == i:
+                        obj_annotations.append(obj)
+                        cam = obj["camera"]
+            if i%5 == 4:
+                boxes = torch.stack([torch.tensor([obj["x"],obj["y"],obj["l"],obj["w"],obj["h"],obj["direction"]]).float() for obj in obj_annotations])
+                im_boxes = ann.hg.state_to_im(boxes,name = cam)
+                
+                im_pos = torch.mean(im_boxes[:,[2,3],:],dim = 1)
+                mean = torch.mean(im_pos,dim = 0)
+                
+                rmse = (((im_pos[:,0] - mean[0]).pow(2) + (im_pos[:,1] - mean[1]).pow(2)).sum(dim = 0)/im_pos.shape[0]).sqrt()
+                mses.append(rmse)
+                
+                obj_annotations = []
+            i+= 1
+        
+        rmse = torch.sqrt(sum(mses)/len(mses))
+        print("RMSE: {}".format(rmse))
+                
 
+def plot_deltas(ann,cam = "p1c5"):
+    
+    all_ts = []
+    for frame in ann.data:        
+        for item in frame:
+            if cam in item:    
+                all_ts.append(frame[item]["timestamp"])
+                break
+        
+    deltas = [all_ts[i] - all_ts[i-1] for i in range(1,len(all_ts))]
+    plt.plot(deltas)
+    plt.ylim([-0.01,0.05])
+    plt.xlim([0,250])
+    plt.show
+        
 #%%    
 
 if __name__ == "__main__":
@@ -3566,12 +4029,12 @@ if __name__ == "__main__":
     try:
     #if True:
         parser = argparse.ArgumentParser()
-        parser.add_argument('-scene', type = int, default = 6)
+        parser.add_argument('-scene', type = int, default = 0)
         parser.add_argument('-spline_metric', type = str, default = "ape")
         parser.add_argument('-ts_metric', type = str, default = "ape")
         parser.add_argument('--correct_bias', action='store_true')
         parser.add_argument('--re', action='store_true')
-        parser.add_argument('-n_frames', type = int, default = 3700)
+        parser.add_argument('-n_frames', type = int, default = 2700)
         parser.add_argument('-max_shift',type = float, default = 0.0433)
         args = parser.parse_args()
         
@@ -3593,7 +4056,65 @@ if __name__ == "__main__":
         # max_shift= 0.01
         # re = False
     
+    plot_histograms2()
+    
     overwrite = False
+    
+    # directory = "/home/worklab/Data/dataset_beta/sequence_{}".format(scene_id)
+    # if scene_id == 0:
+    #             exclude_p3c6 = True
+    # else:
+    #             exclude_p3c6 = False
+    # ann = Annotator(directory,scene_id = scene_id,exclude_p3c6 = exclude_p3c6)  
+    # ann.run()
+    
+    if False:
+        for scene_id in [6]:
+            lf = {0:2700,4:1800,6:1800}
+            directory = "/home/worklab/Data/dataset_beta/sequence_{}".format(scene_id)
+            if scene_id == 0:
+                        exclude_p3c6 = True
+            else:
+                        exclude_p3c6 = False
+            ann = Annotator(directory,scene_id = scene_id,exclude_p3c6 = exclude_p3c6)  
+            with open("cached_final_ann_{}.cpkl".format(scene_id),"rb") as f:
+                            [ann.data,ann.all_ts,ann.splines] = pickle.load(f)
+            ann.last_frame = lf[scene_id]
+            ann.output_vid()
+            
+            plot_histograms2()
+   
+    
+    if False:
+        totals = None
+        for scene_id in [0,4,6]:
+            directory = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k"
+            directory = "/home/worklab/Data/dataset_beta/sequence_{}".format(scene_id)
+    
+            
+            if scene_id == 0:
+                exclude_p3c6 = True
+            else:
+                exclude_p3c6 = False
+            ann = Annotator(directory,scene_id = scene_id,exclude_p3c6 = exclude_p3c6)  
+                    
+            
+            with open("cached_final_ann_{}.cpkl".format(scene_id),"rb") as f:
+                    [ann.data,ann.all_ts,ann.splines] = pickle.load(f)
+            #ann.fill_buffer(200)
+            #ann.run()
+            
+            counts = ann.count_extended_data()
+            if totals is None:
+                totals = counts
+                totals["p3c6"] = 0
+            else:
+                for key in counts:
+                    totals[key] += counts[key]
+
+        print("Extended box counts:")
+        _ = [print("{}:{} boxes".format(key,totals[key])) for key in totals]
+        print("Total number of added boxes: {}".format(sum([totals[key] for key in totals])))
     
     if False: #plot extended trajectories
         directory = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k"
@@ -3716,12 +4237,13 @@ if __name__ == "__main__":
     
     
     if False:
-        for px_correction in [1,2,3,5,7,10,15]:
+        for px_correction in [5]:
             for scene_id in [0,4,6]:
                 directory = "/home/worklab/Data/cv/video/ground_truth_video_06162021/segments_4k"
                 directory = "/home/worklab/Data/dataset_beta/sequence_{}".format(scene_id)
                 x_error = []
                 y_error = []
+                ps_all = []
                 print("On Scene {}, {}pixel max".format(scene_id,px_correction))
                 
                 if scene_id == 0:
@@ -3736,26 +4258,22 @@ if __name__ == "__main__":
                 with open("cached_final_ann_{}.cpkl".format(scene_id),"rb") as f:
                         [ann.data,ann.all_ts,ann.splines] = pickle.load(f)
                         
-                ann.adjust_boxes_with_trajectories(max_shift_x = px_correction,max_shift_y = px_correction)
+                pixel_shifts = ann.adjust_boxes_with_trajectories(max_shift_x = px_correction,max_shift_y = px_correction)
+                ps_all += pixel_shifts
                 
                 # get projection error
-                [err_x,err_y] = ann.estimate_projection_error()
-                x_error += err_x
-                y_error += err_y 
+                #[err_x,err_y,err_p] = ann.estimate_projection_error()
+                #x_error += err_x
+                #y_error += err_y 
            
-            # save x error y error and title for plotting later 
-            with open("PE_{}_pixels.cpkl".format(px_correction),"wb") as f:
-                    pickle.dump([x_error,y_error,"{} pixel correction"],f)   
+            print("With max pixel correction {} px, {}px average shift".format(px_correction, sum(ps_all)/len(ps_all)))
+            # # save x error y error and title for plotting later 
+            # with open("PE_{}_pixels.cpkl".format(px_correction),"wb") as f:
+            #         pickle.dump([x_error,y_error,"{} pixel correction"],f)   
             
+            ann.run()
             del ann
-    
-    
-    
-    
-    
-    
-    plot_histograms() 
-    
+        
     if False: # get roadway error
         x_error = []
         y_error = []
@@ -3813,7 +4331,7 @@ if __name__ == "__main__":
 
                 
                 # get projection error
-                [err_x,err_y,err_p] = ann.estimate_projection_error(reverse_curve_offset = True)
+                [err_x,err_y,err_p] = ann.estimate_projection_error(reverse_curve_offset = False)
                 print(sum(err_x)/len(err_x),sum(err_y)/len(err_y),sum(err_p)/len(err_p))
                 x_error += err_x
                 y_error += err_y 
